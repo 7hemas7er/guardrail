@@ -1,0 +1,15 @@
+{
+  "_commento": "Voci da unire al proprio ~/.claude/settings.json. Il hook non può impostarle: sono scelte dell'utente.",
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(.secrets)",
+      "Read(~/.ssh/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
