@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  hook-cases:
+    name: casi del hook guard.py
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: manifest JSON validi
+        run: |
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json examples/*.json tests/guardrail.test.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" && echo "ok $f"
+          done
+      - name: sintassi hook
+        run: |
+          python3 -m py_compile hooks/guard.py hooks/session-start.py tests/run.py
+          bash -n hooks/run-python.sh
+      - name: casi
+        run: python3 tests/run.py -v
+      - name: session-start stampa le regole
+        run: |
+          out=$(bash hooks/run-python.sh hooks/session-start.py)
+          echo "$out" | grep -q "regole essenziali" || { echo "RULES-CORE non iniettato"; exit 1; }

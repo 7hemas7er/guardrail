@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.guardrail.local.json
+
+# dotfile d'ambiente che non appartengono al repo
+.bashrc
+.bash_profile
+.profile
+.zshrc
+.zprofile
+.gitconfig
+.mcp.json
+.claude/
+.idea/
+.vscode/
+.ripgreprc

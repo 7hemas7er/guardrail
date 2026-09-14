@@ -1,0 +1,2 @@
+@AGENTS.md
+@RULES-CORE.md

@@ -1,0 +1,24 @@
+{
+  "_commento": "Esempio di configurazione. Copiare come .guardrail.json nella root del repo e sostituire host, nomi di database, server MCP e script con quelli veri. Nota: qui il server MCP di produzione si chiama 'postgres', senza 'prod' nel nome, e per questo va dichiarato esplicitamente.",
+  "prod_mcp_servers": ["postgres", "telemetria"],
+  "ask_mcp_servers": ["postgres-test"],
+  "prod_patterns": [
+    "db-produzione\\.esempio\\.com",
+    "\\bappdb\\b(?!_)",
+    "\\btelemetria\\b",
+    "\\bapp-prod\\b",
+    "app\\.esempio\\.it"
+  ],
+  "deny_commands": [
+    "scripts/deploy/(promote-to-production|rollback-production)\\.sh",
+    "REFRESH_DB_ALLOWED=appdb_test\\b",
+    "REFRESH_DB_ALLOWED=appdb\\b"
+  ],
+  "ask_commands": [
+    "scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh",
+    "build-and-push(-fast)?\\.sh[^;|]*--skip-tests",
+    "az containerapp (update|revision|delete)",
+    "gh workflow run[^;|]*deploy-frontend"
+  ],
+  "allow_commands": []
+}
