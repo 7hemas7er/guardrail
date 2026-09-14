@@ -1,5 +1,5 @@
 {
-  "_commento": "Voci da unire al proprio ~/.claude/settings.json. Il hook non può impostarle: sono scelte dell'utente.",
+  "_commento": "Voci da unire al proprio ~/.claude/settings.json. Il sandbox il hook non puo accenderlo al posto tuo. Le deny sui segreti sono ridondanti rispetto al hook, che blocca le letture sia via Read sia via shell: tenerle e difesa in profondita.",
   "permissions": {
     "deny": [
       "Read(.env)",

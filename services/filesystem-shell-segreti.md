@@ -55,6 +55,20 @@ il comando: non risolve le variabili.
 | Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`), `.secrets`, `.netrc`, `.pgpass` | CONFERMA |
 | Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
 | `git clean -x` | BLOCCO |
+| Lettura (`Read`) di `.env*`, `.secrets`, chiavi, `.netrc`, `.pgpass`, o dentro `~/.ssh` | BLOCCO |
+| `cat`, `grep`, `head`, `sed`… su un file di segreti | BLOCCO |
+| `source .env` | CONFERMA |
+| Scrittura su `.guardrail.json` o su `~/.claude/settings.json` | CONFERMA |
 
-Le letture di `.env*` e `.secrets` sono negate dalle impostazioni consigliate
-(`examples/settings.example.json`, chiave `permissions.deny`), non dal hook.
+Le letture di segreti sono presidiate sia sul tool `Read` sia sulla shell: le
+`permissions.deny` delle impostazioni valgono solo per `Read`, e un `cat .env`
+passerebbe. Tenerle resta utile come difesa in profondità.
+
+La conferma sulla scrittura di `.guardrail.json` e delle impostazioni di Claude
+Code serve a una cosa sola: un agente che ha ricevuto un blocco non può allentare
+da solo le regole che lo vincolano (regola 8).
+
+Un limite noto: il hook legge il comando come testo, quindi un documento che
+*cita* un comando pericoloso dentro un heredoc viene bloccato come se lo
+eseguisse. Per scrivere file che contengono esempi di comandi, usa gli strumenti
+di modifica file dell'agente invece di `cat > file <<EOF`.
