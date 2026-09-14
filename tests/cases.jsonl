@@ -55,10 +55,22 @@
 {"name": "MCP dev DROP DATABASE", "tool_name": "mcp__postgres-dev__query", "tool_input": {"sql": "DROP DATABASE appdb_dev"}, "expect": "deny"}
 {"name": "MCP laravel-boost query in lettura: ok", "tool_name": "mcp__laravel-boost__database-query", "tool_input": {"query": "SELECT 1"}, "expect": "allow"}
 {"name": "MCP non SQL: ok", "tool_name": "mcp__github__issue_read", "tool_input": {"issue_number": 12}, "expect": "allow"}
-{"name": "Write su .env", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/iro/.env", "content": "X=1"}, "expect": "ask"}
-{"name": "Write su .env.example: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/iro/.env.example", "content": "X="}, "expect": "allow"}
+{"name": "Write su .env", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/.env", "content": "X=1"}, "expect": "ask"}
+{"name": "Write su .env.example: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/.env.example", "content": "X="}, "expect": "allow"}
 {"name": "Edit su chiave ssh", "tool_name": "Edit", "tool_input": {"file_path": "/home/master/.ssh/id_ed25519", "old_string": "a", "new_string": "b"}, "expect": "deny"}
 {"name": "Write su ~/.bashrc", "tool_name": "Write", "tool_input": {"file_path": "~/.bashrc", "content": "x"}, "expect": "ask"}
 {"name": "Write su /etc", "tool_name": "Write", "tool_input": {"file_path": "/etc/hosts", "content": "x"}, "expect": "deny"}
-{"name": "Write nel progetto: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/iro/app.js", "content": "x"}, "expect": "allow"}
-{"name": "Read non è presidiato: ok", "tool_name": "Read", "tool_input": {"file_path": "/home/master/.bashrc"}, "expect": "allow"}
+{"name": "Write nel progetto: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/app.js", "content": "x"}, "expect": "allow"}
+{"name": "Read di un dotfile non segreto: ok", "tool_name": "Read", "tool_input": {"file_path": "/home/master/.bashrc"}, "expect": "allow"}
+{"name": "cat .env", "tool_name": "Bash", "tool_input": {"command": "cat .env"}, "expect": "deny"}
+{"name": "cat .env.example: ok", "tool_name": "Bash", "tool_input": {"command": "cat .env.example"}, "expect": "allow"}
+{"name": "grep in .env.production", "tool_name": "Bash", "tool_input": {"command": "grep -n DB_PASSWORD .env.production"}, "expect": "deny"}
+{"name": "cat di una chiave privata", "tool_name": "Bash", "tool_input": {"command": "cat certs/server.key"}, "expect": "deny"}
+{"name": "ls -la .env non stampa il contenuto: ok", "tool_name": "Bash", "tool_input": {"command": "ls -la .env"}, "expect": "allow"}
+{"name": "cat di un file normale: ok", "tool_name": "Bash", "tool_input": {"command": "cat config/app.php"}, "expect": "allow"}
+{"name": "source .env", "tool_name": "Bash", "tool_input": {"command": "source .env && php artisan migrate --pretend"}, "expect": "ask"}
+{"name": "Read su .env", "tool_name": "Read", "tool_input": {"file_path": "/home/master/repos/progetto/.env"}, "expect": "deny"}
+{"name": "Read su .env.example: ok", "tool_name": "Read", "tool_input": {"file_path": "/home/master/repos/progetto/.env.example"}, "expect": "allow"}
+{"name": "Read dentro ~/.ssh", "tool_name": "Read", "tool_input": {"file_path": "/home/master/.ssh/config"}, "expect": "deny"}
+{"name": "Write su .guardrail.json", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/.guardrail.json", "content": "{}"}, "expect": "ask"}
+{"name": "Write sulle settings di Claude Code", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/settings.json", "content": "{}"}, "expect": "ask"}

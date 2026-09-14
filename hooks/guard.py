@@ -8,10 +8,13 @@ e risponde su stdout con una decisione:
     ask    -> chiede conferma all'utente, anche in modalità auto
     deny   -> blocca il tool e spiega a Claude il motivo
 
-Tre famiglie di regole, tutte nella funzione `decide`:
-    Bash        comandi distruttivi, deploy con cancellazione, SQL da CLI su prod
+Quattro famiglie di regole, tutte nella funzione `decide`:
+    Bash        comandi distruttivi, deploy con cancellazione, SQL da CLI su prod,
+                letture di segreti da shell (cat .env)
     mcp__*__*   query SQL via server MCP: scritture su prod, DELETE/UPDATE senza WHERE
-    Write/Edit  file di segreti e dotfile della home
+    Write/Edit  file di segreti, dotfile della home, e la configurazione di
+                guardrail stessa (.guardrail.json, ~/.claude/settings.json)
+    Read        file di segreti e ~/.ssh
 
 La configurazione per repo sta in `.guardrail.json` (cercato dalla cwd verso l'alto)
 e in `~/.guardrail.json`; le liste si sommano. Vedi README.md.
@@ -152,11 +155,49 @@ def check_rm(cmd: str) -> None:
                 )
 
 
+SECRET_FILE = re.compile(
+    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)?|\.secrets|\.netrc|\.pgpass|\.my\.cnf"
+    r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
+)
+# Comandi che stampano o trasformano il contenuto di un file: il segreto finisce
+# nella trascrizione della sessione, che resta su disco.
+SECRET_READERS = re.compile(
+    r"\b(cat|bat|tac|less|more|head|tail|nl|od|xxd|strings|grep|egrep|fgrep|rg|ag|awk|sed|cut|base64|jq|tee)\b"
+)
+SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
+
+
+def check_secret_reads(text: str) -> None:
+    """Blocca `cat .env` e affini: permissions.deny copre il tool Read, non la shell."""
+    for segment in re.split(r"[;&|\n]+|\$\(|\)", text):
+        if not segment.strip():
+            continue
+        found = [
+            m.group(0) for m in SECRET_FILE.finditer(segment)
+            if not SECRET_TEMPLATE.search(m.group(0))
+        ]
+        if not found:
+            continue
+        if SECRET_READERS.search(segment):
+            deny(
+                f"lettura di un file di segreti da shell ({found[0]}): il contenuto finirebbe "
+                "nella trascrizione, che resta su disco. Per il nome di una variabile leggi "
+                ".env.example; per il valore, chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
+            )
+        if SECRET_SOURCERS.search(segment):
+            ask(
+                f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
+                "del comando. Conferma che è voluto?"
+            )
+
+
 def check_bash(cmd: str, config: dict) -> None:
     text = re.sub(r"\\\n", " ", cmd)
 
     if matches_any(config["allow_commands"], text):
         return
+
+    check_secret_reads(text)
 
     if (pattern := matches_any(config["deny_commands"], text)):
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
@@ -294,13 +335,59 @@ SECRET_NAME = re.compile(r"^(\.env(\..+)?|\.secrets|.*\.pem|.*\.key|id_(rsa|ed25
 SECRET_TEMPLATE = re.compile(r"\.(example|sample|template|dist)$")
 
 
-def check_write(tool_input: dict) -> None:
+def target_path(tool_input: dict) -> Path | None:
     raw = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
     if not isinstance(raw, str) or not raw:
+        return None
+    return Path(os.path.expanduser(raw))
+
+
+def is_secret_file(name: str) -> bool:
+    return bool(SECRET_NAME.match(name)) and not SECRET_TEMPLATE.search(name)
+
+
+def check_read(tool_input: dict) -> None:
+    """Le letture di segreti non dipendono più da permissions.deny nelle settings."""
+    path = target_path(tool_input)
+    if path is None:
         return
-    path = Path(os.path.expanduser(raw))
+    if any(part == ".ssh" for part in path.parts):
+        deny(f"lettura dentro ~/.ssh ({path}): chiavi e configurazione SSH non passano dall'agente.")
+    if is_secret_file(path.name):
+        deny(
+            f"lettura di un file di segreti ({path}): il contenuto finirebbe nella trascrizione, "
+            "che resta su disco. Per il nome di una variabile leggi .env.example; per il valore, "
+            "chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
+        )
+
+
+def check_write(tool_input: dict) -> None:
+    path = target_path(tool_input)
+    if path is None:
+        return
+    raw = str(path)
     name = path.name
     home = Path.home()
+
+    # La configurazione di guardrail non si modifica da soli: sarebbe il modo
+    # elegante di aggirare un blocco (RULES-CORE.md, regola 8).
+    if name == ".guardrail.json":
+        ask(
+            "modifica di .guardrail.json: cambia le regole di guardrail che ti vincolano. "
+            "Decide l'utente, e il file va committato con la motivazione. (guardrail: RULES-CORE.md 8)"
+        )
+    try:
+        relative_home = path.resolve().relative_to(home)
+    except (ValueError, OSError):
+        relative_home = None
+    if relative_home is not None and relative_home.parts[:1] == (".claude",) and name in (
+        "settings.json",
+        "settings.local.json",
+    ):
+        ask(
+            "modifica delle impostazioni di Claude Code: tocca permessi, hook e sandbox "
+            "dell'utente. Mostra il cambiamento e fallo approvare."
+        )
 
     if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$", name)):
         deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
@@ -308,12 +395,8 @@ def check_write(tool_input: dict) -> None:
         deny(f"scrittura su un file di sistema ({raw}).")
     if SECRET_NAME.match(name) and not SECRET_TEMPLATE.search(name):
         ask(f"scrittura su un file di segreti ({raw}). Conferma che è voluto e che il file è gitignorato.")
-    try:
-        relative = path.resolve().relative_to(home)
-        if len(relative.parts) == 1 and relative.parts[0].startswith("."):
-            ask(f"scrittura su un dotfile della home ({raw}): cambia l'ambiente dell'utente. Conferma?")
-    except (ValueError, OSError):
-        pass
+    if relative_home is not None and len(relative_home.parts) == 1 and relative_home.parts[0].startswith("."):
+        ask(f"scrittura su un dotfile della home ({raw}): cambia l'ambiente dell'utente. Conferma?")
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +410,8 @@ def decide(payload: dict) -> None:
 
     if tool == "Bash":
         check_bash(str(tool_input.get("command", "")), config)
+    elif tool == "Read":
+        check_read(tool_input)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         check_write(tool_input)
     elif tool.startswith("mcp__"):
