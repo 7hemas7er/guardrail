@@ -25,14 +25,26 @@ Da un clone locale, per provarlo o svilupparlo:
 Cosa ottieni:
 
 - a ogni sessione, le regole essenziali (`RULES-CORE.md`) entrano nel contesto;
-- ogni comando Bash, scrittura di file e query MCP passa dal hook `guard.py`:
-  esito `allow`, `ask` (conferma anche in modalità auto) o `deny` (blocco con
-  spiegazione all'agente);
-- la skill `guardrail`, che carica le regole del servizio interessato.
+- ogni comando Bash, lettura e scrittura di file e query MCP passa dal hook
+  `guard.py`: esito `allow`, `ask` (conferma anche in modalità auto) o `deny`
+  (blocco con spiegazione all'agente);
+- la skill `guardrail`, che carica le regole del servizio interessato;
+- il comando `/guardrail:setup`, che configura il repo corrente.
 
-Aggiungi poi le impostazioni consigliate al tuo `~/.claude/settings.json`
-(vedi `examples/settings.example.json`): negano la lettura di `.env*` e
-accendono il sandbox. Il hook non può farlo al posto tuo.
+Poi, nel primo progetto che lo richiede:
+
+```
+/guardrail:setup
+```
+
+L'agente guarda `.mcp.json`, gli script di deploy e la CI, deduce quali server e
+host sono produzione, e ti propone il `.guardrail.json` da committare. Non scrive
+niente senza mostrartelo, e la scrittura passa comunque da una conferma.
+
+Resta una sola cosa da fare a mano, una volta per macchina: accendere il sandbox
+in `~/.claude/settings.json` (vedi `examples/settings.example.json`). È l'unica
+protezione che nessun hook può attivare al posto tuo. Se manca, guardrail te lo
+segnala all'inizio della prima sessione.
 
 ## Configurazione per progetto
 
@@ -94,6 +106,7 @@ hooks/guard.py            hook PreToolUse: allow / ask / deny
 hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md
 hooks/hooks.json          registrazione dei hook nel plugin
 skills/guardrail/         skill che carica il file di servizio giusto
+commands/setup.md         /guardrail:setup — configura il repo corrente
 examples/                 .guardrail.json d'esempio, settings consigliati
 tests/                    casi e runner
 .claude-plugin/           manifest del plugin e del marketplace
