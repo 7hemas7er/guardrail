@@ -167,16 +167,27 @@ def check_rm(cmd: str) -> None:
     for match in RM_ANY.finditer(cmd):
         args = match.group("args")
         recursive = RM_RECURSIVE_FLAG.search(" " + args) is not None
+        variable_only: str | None = None
         for arg in args.split():
-            if arg.startswith("-"):
+            if arg.startswith("-") or not DANGEROUS_RM_TARGET.match(arg):
                 continue
-            if DANGEROUS_RM_TARGET.match(arg):
-                deny(
-                    f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
-                    "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
-                    "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
-                    "(guardrail: filesystem-shell-segreti.md)"
-                )
+            # Un rm non ricorsivo su una variabile ha raggio limitato: conferma,
+            # non blocco. Tutto il resto (ricorsivo, home, radici, glob) è blocco.
+            if not recursive and re.match(r"""^["']?[$\{]""", arg):
+                variable_only = variable_only or arg
+                continue
+            deny(
+                f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
+                "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
+                "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
+                "(guardrail: filesystem-shell-segreti.md)"
+            )
+        if variable_only:
+            ask(
+                f"rm su una variabile ({variable_only!r}): il bersaglio dipende dal valore al momento "
+                "dell'esecuzione, e una variabile vuota o con spazi cancella altro. Stampa il path, "
+                "mostralo, e usa quello letterale. Conferma?"
+            )
     for match in FIND_DELETE.finditer(cmd):
         root = match.group("root") or "."
         if root != "." and DANGEROUS_RM_TARGET.match(root):
