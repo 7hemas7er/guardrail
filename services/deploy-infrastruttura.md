@@ -44,7 +44,18 @@ Docker locale.
 | `lftp … mirror … --delete` senza `--dry-run` | BLOCCO |
 | `rsync … --delete` senza `--dry-run`/`-n` | BLOCCO |
 | `docker system prune`, `docker volume rm/prune`, `compose down -v` | CONFERMA |
-| `curl … \| sh`, `wget … \| bash` | BLOCCO |
+| `curl … \| sh`, `wget … \| bash`, `base64 -d \| sh`, `echo … \| sh` | BLOCCO |
 | `chmod 777`, `mkfs`, `dd of=/dev/…`, `wsl --unregister` | BLOCCO |
+| `docker run -v ~:/…`, `-v /:/…`, `--mount source=/home/…`: la home o la radice dentro un container | CONFERMA |
+| `sudo <qualunque cosa>` (tranne `sudo rm`, che è blocco) | CONFERMA |
+| Uno script invocato (`bash x.sh`, `./x.sh`, `source x.sh`, `python x.py`) che contiene un comando che il hook bloccherebbe | CONFERMA |
+| Chiamata MCP verso Azure e simili con `delete`/`purge`/`deallocate`… | CONFERMA; BLOCCO se il server o i parametri sono di produzione |
+| Chiamata MCP con `deploy`/`update`/`scale`/`restart` su produzione | BLOCCO |
 | Comandi elencati in `deny_commands` del repo (es. script di promozione dismessi) | BLOCCO |
 | Comandi elencati in `ask_commands` del repo (es. `promote-to-production.sh`) | CONFERMA |
+
+Lo script invocato viene letto dal hook e scansionato con le stesse regole del
+comando diretto: un `rsync --delete` dentro `deploy.sh` vale quanto un
+`rsync --delete` scritto a mano. L'esito è una conferma, non un blocco, perché
+lo script lo ha scritto un umano e l'umano decide; fa eccezione un comando in
+`deny_commands`, che resta bloccato anche dentro uno script.

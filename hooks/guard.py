@@ -10,11 +10,13 @@ e risponde su stdout con una decisione:
 
 Quattro famiglie di regole, tutte nella funzione `decide`:
     Bash        comandi distruttivi, deploy con cancellazione, SQL da CLI su prod,
-                letture di segreti da shell (cat .env)
-    mcp__*__*   query SQL via server MCP: scritture su prod, DELETE/UPDATE senza WHERE
-    Write/Edit  file di segreti, dotfile della home, e la configurazione di
-                guardrail stessa (.guardrail.json, ~/.claude/settings.json)
-    Read        file di segreti e ~/.ssh
+                letture di segreti da shell (cat .env), scritture da shell alla
+                configurazione di guardrail, script invocati (letti e scansionati)
+    mcp__*__*   query SQL via server MCP: scritture su prod, DELETE/UPDATE senza WHERE;
+                ogni altro server MCP: operazioni distruttive o di modifica
+    Write/Edit  file di segreti, dotfile della home, ~/.claude, la configurazione
+                di guardrail stessa, e tutto ciò che sta fuori dal progetto
+    Read        file di segreti, ~/.ssh e le altre directory di credenziali
 
 La configurazione per repo sta in `.guardrail.json` (cercato dalla cwd verso l'alto)
 e in `~/.guardrail.json`; le liste si sommano. Vedi README.md.
@@ -54,6 +56,9 @@ WRITE_SQL = re.compile(
 )
 READ_ONLY_START = re.compile(r"^\s*(SELECT|WITH|EXPLAIN|SHOW|DESCRIBE|DESC|TABLE|VALUES|\\d)", re.I)
 
+# Dimensione massima di uno script invocato che il hook accetta di leggere.
+SCRIPT_MAX_BYTES = 256 * 1024
+
 
 def _read_json(path: Path) -> dict:
     try:
@@ -88,6 +93,20 @@ def load_config(cwd: str) -> dict:
     return config
 
 
+def project_root(cwd: str) -> Path | None:
+    """La root git del progetto (o la cwd stessa se non è un repo)."""
+    if not cwd:
+        return None
+    try:
+        current = Path(cwd).resolve()
+    except OSError:
+        return None
+    for candidate in [current, *current.parents]:
+        if (candidate / ".git").exists():
+            return candidate
+    return current
+
+
 # ---------------------------------------------------------------------------
 # Decisioni
 # ---------------------------------------------------------------------------
@@ -118,13 +137,14 @@ def matches_any(patterns: list[str], text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Bash
+# Bash: cancellazioni
 # ---------------------------------------------------------------------------
 
-RM_RECURSIVE = re.compile(
-    r"(?:^|[;&|(\n]\s*|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*)rm\s+(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s+-[a-zA-Z-]+)*\s+([^;&|)\n]*)",
+RM_ANY = re.compile(
+    r"(?:^|[;&|(\n]\s*|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*)rm\s+(?P<args>[^;&|)\n]*)",
     re.M,
 )
+RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s|$)")
 DANGEROUS_RM_TARGET = re.compile(
     r"""^(?:["']?)(?:
         \$|\{\$|              # variabile: $HOME, $S, ${X}
@@ -138,25 +158,43 @@ DANGEROUS_RM_TARGET = re.compile(
     )""",
     re.X,
 )
+FIND_DELETE = re.compile(
+    r"(?:^|[;&|(]\s*)(?:sudo\s+)?find\s+(?P<root>[^-\s;&|][^\s;&|]*)?[^;&|]*?(?:-delete\b|-exec\s+(?:sudo\s+)?rm\b)"
+)
 
 
 def check_rm(cmd: str) -> None:
-    for match in RM_RECURSIVE.finditer(cmd):
-        args = match.group(1).split()
-        for arg in args:
+    for match in RM_ANY.finditer(cmd):
+        args = match.group("args")
+        recursive = RM_RECURSIVE_FLAG.search(" " + args) is not None
+        for arg in args.split():
             if arg.startswith("-"):
                 continue
             if DANGEROUS_RM_TARGET.match(arg):
                 deny(
-                    f"rm ricorsivo su un bersaglio non sicuro: {arg!r}. "
+                    f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
                     "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
                     "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
                     "(guardrail: filesystem-shell-segreti.md)"
                 )
+    for match in FIND_DELETE.finditer(cmd):
+        root = match.group("root") or "."
+        if root != "." and DANGEROUS_RM_TARGET.match(root):
+            deny(f"find … -delete / -exec rm a partire da {root!r}: cancellazione ricorsiva su un bersaglio non sicuro.")
+        ask(
+            f"find … -delete / -exec rm a partire da {root!r}: cancella tutto ciò che il predicato seleziona. "
+            "Prima lo stesso find senza -delete, mostrato all'utente. Conferma?"
+        )
 
+
+# ---------------------------------------------------------------------------
+# Bash: segreti e configurazione
+# ---------------------------------------------------------------------------
 
 SECRET_FILE = re.compile(
-    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)?|\.secrets|\.netrc|\.pgpass|\.my\.cnf"
+    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)?|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
+    r"|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc"
+    r"|\.aws/credentials|\.docker/config\.json|\.kube/config|gh/hosts\.yml|\.gnupg/[^\s\"']+"
     r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
 )
 # Comandi che stampano o trasformano il contenuto di un file: il segreto finisce
@@ -166,12 +204,24 @@ SECRET_READERS = re.compile(
 )
 SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
 
+# File che governano guardrail e Claude Code: modificarli da shell è il modo di
+# aggirare un blocco senza passare da Write/Edit.
+PROTECTED_PATH = re.compile(
+    r"(?:^|[\s/\"'=])(?P<path>\.guardrail\.json|\.claude/settings(?:\.local)?\.json|\.claude/CLAUDE\.md"
+    r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)"
+)
+SHELL_WRITERS = re.compile(
+    r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b|>>?"
+)
+
+
+def shell_segments(text: str) -> list[str]:
+    return [s for s in re.split(r"[;&|\n]+|\$\(|\)", text) if s.strip()]
+
 
 def check_secret_reads(text: str) -> None:
     """Blocca `cat .env` e affini: permissions.deny copre il tool Read, non la shell."""
-    for segment in re.split(r"[;&|\n]+|\$\(|\)", text):
-        if not segment.strip():
-            continue
+    for segment in shell_segments(text):
         found = [
             m.group(0) for m in SECRET_FILE.finditer(segment)
             if not SECRET_TEMPLATE.search(m.group(0))
@@ -189,20 +239,102 @@ def check_secret_reads(text: str) -> None:
                 f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
                 "del comando. Conferma che è voluto?"
             )
+        if SHELL_WRITERS.search(segment):
+            ask(f"scrittura da shell su un file di segreti ({found[0]}). Conferma che è voluto e che il file è gitignorato.")
 
 
-def check_bash(cmd: str, config: dict) -> None:
-    text = re.sub(r"\\\n", " ", cmd)
+def check_protected_writes(text: str) -> None:
+    for segment in shell_segments(text):
+        match = PROTECTED_PATH.search(segment)
+        if not match or not SHELL_WRITERS.search(segment):
+            continue
+        path = match.group("path")
+        if match.group("plugin"):
+            deny(
+                f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
+                "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+            )
+        ask(
+            f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
+            "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
+        )
 
-    if matches_any(config["allow_commands"], text):
+
+# ---------------------------------------------------------------------------
+# Bash: heredoc e script invocati
+# ---------------------------------------------------------------------------
+
+# Un heredoc che scrive su file (cat > x <<EOF, tee x <<EOF) contiene dati, non
+# comandi: citare `git push --force` in un README non è eseguirlo. Un heredoc che
+# alimenta un interprete (bash <<EOF, python - <<PY) resta comandi e non si tocca.
+HEREDOC = re.compile(
+    r"(?P<head>^[^\n]*?(?:>>?\s*\S+|\btee\b)[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
+    re.M | re.S,
+)
+
+SCRIPT_BY_INTERPRETER = re.compile(
+    r"(?:^|[;&|(]\s*)(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+(?:-[\w=-]+\s+)*(?P<path>[^\s;&|()-][^\s;&|()]*)"
+)
+SCRIPT_DIRECT = re.compile(r"(?:^|[;&|(]\s*)(?:sudo\s+)?(?P<path>(?:\./|\.\./|~/)[^\s;&|()]+)")
+SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]+)")
+
+
+def strip_data_heredocs(text: str) -> str:
+    return HEREDOC.sub(lambda m: m.group("head") + m.group("end"), text)
+
+
+def invoked_scripts(text: str, cwd: str) -> list[Path]:
+    found: list[Path] = []
+    for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
+        for match in regex.finditer(text):
+            raw = match.group("path").strip("\"'")
+            if "$" in raw:
+                continue
+            path = Path(os.path.expanduser(raw))
+            if not path.is_absolute():
+                path = Path(cwd or os.getcwd()) / path
+            try:
+                if path.is_file() and path.stat().st_size <= SCRIPT_MAX_BYTES and path not in found:
+                    found.append(path)
+            except OSError:
+                continue
+    return found
+
+
+def check_scripts(text: str, config: dict, cwd: str) -> None:
+    """Uno script lanciato è un comando che il hook altrimenti non vedrebbe."""
+    for path in invoked_scripts(text, cwd):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            check_bash(content, config, cwd, depth=1)
+        except Decision as found:
+            if found.reason.startswith("comando vietato dalla configurazione"):
+                deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
+            ask(
+                f"lo script {path.name} contiene un comando che guardrail bloccherebbe se lanciato "
+                f"direttamente — {found.reason} Leggilo, mostralo all'utente, e decida lui."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Bash: la funzione principale
+# ---------------------------------------------------------------------------
+
+def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
+    text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+
+    if depth == 0 and matches_any(config["allow_commands"], text):
         return
-
-    check_secret_reads(text)
 
     if (pattern := matches_any(config["deny_commands"], text)):
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
     check_rm(text)
+    check_secret_reads(text)
+    check_protected_writes(text)
 
     # Distruzione di sistema o supply chain
     if re.search(r"\bsudo\s+rm\b", text):
@@ -211,8 +343,12 @@ def check_bash(cmd: str, config: dict) -> None:
         deny("comando che distrugge un filesystem o una distro.")
     if re.search(r"\bchmod\s+(-R\s+)?[0-7]*777\b", text):
         deny("chmod 777: permessi aperti a tutti, mai.")
+    if re.search(r"\b(chmod|chown|chgrp)\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+|--recursive\s+)[^;|]*\s(?:~|\$HOME|/home/[\w.-]+|/)/?(?:\s|$)", text):
+        deny("chmod/chown ricorsivo sulla home o sulla radice: rende inutilizzabile l'ambiente dell'utente.")
     if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
         deny("curl|sh: esecuzione di codice scaricato al volo. Scarica il file, leggilo, poi esegui.")
+    if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
+        deny("codice decodificato o costruito al volo e passato a sh: illeggibile per chi controlla. Scrivilo in un file, poi esegui.")
 
     # Deploy con cancellazione sul bersaglio
     if re.search(r"\bmirror\b[^;|]*--delete\b", text) and not re.search(r"\bmirror\b[^;|]*--dry-run\b", text):
@@ -225,6 +361,8 @@ def check_bash(cmd: str, config: dict) -> None:
         deny("git push --force: riscrive la storia condivisa. Mai. Se serve, --force-with-lease su un branch personale, con conferma.")
     if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*--force-with-lease", text):
         ask("git push --force-with-lease: accettabile solo su un branch personale. Conferma?")
+    if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--delete\b|\s-d\b|\s:\S)", text):
+        ask("git push --delete: cancella un branch o un tag sul remoto, per tutti. Conferma?")
     if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*[xX]", text):
         deny("git clean -x/-X: cancella anche i file ignorati, cioè .env e le credenziali locali.")
     if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*f", text):
@@ -233,6 +371,10 @@ def check_bash(cmd: str, config: dict) -> None:
         ask("git reset --hard: scarta modifiche non committate. Conferma?")
     if re.search(r"\bgit\b[^;|]*\b(checkout|restore)\s+(--\s+)?\.(\s|$)", text):
         ask("git checkout/restore .: scarta tutte le modifiche locali. Conferma?")
+    if re.search(r"\bgit\b[^;|]*\bbranch\b[^;|]*\s-D\b", text):
+        ask("git branch -D: cancella un branch anche se non è stato mergiato. Conferma?")
+    if re.search(r"\bgit\b[^;|]*\bstash\s+(drop|clear)\b", text):
+        ask("git stash drop/clear: lavoro accantonato che sparisce. Conferma?")
 
     # Laravel: comandi che distruggono lo schema
     if re.search(r"\bartisan\s+(migrate:fresh|db:wipe|migrate:reset)\b", text):
@@ -242,12 +384,24 @@ def check_bash(cmd: str, config: dict) -> None:
     if re.search(r"\bartisan\s+db:seed\b[^;|]*RolePermissionSeeder", text):
         ask("RolePermissionSeeder sovrascrive le assegnazioni manuali di ruoli e permessi. Conferma che NON è un DB con dati reali.")
 
-    # Docker: volumi = database
+    # Docker: volumi = database; la home montata in un container = nessuna regola
     if re.search(r"\bdocker\s+(system\s+prune|volume\s+(rm|prune)|compose\s+down\b[^;|]*(-v\b|--volumes))", text):
         ask("Docker: questa operazione cancella volumi, cioè database locali. Conferma?")
+    if re.search(r"\bdocker\b[^;|]*\s(?:-v|--volume)[\s=]+[\"']?(?:~|\$HOME|/home/[\w.-]+|/)/?:", text) or re.search(
+        r"\bdocker\b[^;|]*--mount[^;|]*\bsource=[\"']?(?:~|\$HOME|/home/[\w.-]+|/)/?[,\"'\s]", text
+    ):
+        ask("docker con la home o la radice montate nel container: da dentro, nessuna regola vale più. Monta una directory del progetto. Conferma?")
 
     # SQL da riga di comando
     check_sql_cli(text, config)
+
+    # Script invocati: si leggono e si scansionano con le stesse regole
+    if depth == 0:
+        check_scripts(text, config, cwd)
+
+    # Privilegi: mai in silenzio
+    if re.search(r"(?:^|[;&|(]\s*)sudo\b", text):
+        ask("sudo: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
 
     if (pattern := matches_any(config["ask_commands"], text)):
         ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
@@ -287,10 +441,23 @@ def check_unbounded_writes(sql: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# MCP (server SQL e affini)
+# MCP: server SQL, e tutti gli altri
 # ---------------------------------------------------------------------------
 
 MCP_TOOL = re.compile(r"^mcp__(?P<server>[^_].*?)__(?P<tool>[^_].*)$")
+MCP_READ_TOOL = re.compile(r"^(get|list|read|show|describe|search|find|fetch|lookup|check|view|status|info|explain|count|export|browse|preview|query|resolve)(?=$|[_\-\s])", re.I)
+# Chiavi di tool_input che descrivono l'operazione (Azure MCP: "command",
+# GitHub MCP: "method"/"state"). Il resto dell'input sono parametri, non intenzioni.
+MCP_OP_KEYS = ("command", "operation", "action", "method", "op", "intent", "state", "mode", "verb")
+MCP_DESTRUCTIVE = re.compile(
+    r"\b(delete|remove|purge|destroy|drop|wipe|truncate|prune|reset|unregister|deallocate|revoke|force|closed?|dismiss|archive)\b",
+    re.I,
+)
+MCP_MUTATING = re.compile(
+    r"\b(create|update|set|write|put|patch|push|deploy|scale|restart|start|stop|merge|upload|import|restore|rotate"
+    r"|assign|grant|enable|disable|apply|edit|rename|move|tag|publish|submit|send|post|add|invite|approve|reopen)\b",
+    re.I,
+)
 
 
 def extract_sql(tool_input: dict) -> str:
@@ -301,38 +468,73 @@ def extract_sql(tool_input: dict) -> str:
     return ""
 
 
+def mcp_operation_text(tool: str, tool_input: dict) -> str:
+    parts = [tool.replace("_", " ").replace("-", " ")]
+    for key in MCP_OP_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return " ".join(parts)
+
+
 def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     match = MCP_TOOL.match(tool_name)
     if not match:
         return
     server, tool = match.group("server"), match.group("tool")
-    sql = extract_sql(tool_input)
-    if not sql:
-        return
-    if not re.search(r"(query|sql|execute|run|statement)", tool, re.I):
-        return
-
     is_prod = server in config["prod_mcp_servers"] or matches_any(config["prod_patterns"], server) is not None
     is_shared = server in config["ask_mcp_servers"]
 
-    statements = [s for s in re.split(r";", re.sub(r"--[^\n]*", "", sql)) if s.strip()]
-    writes = [s for s in statements if WRITE_SQL.search(s) or not READ_ONLY_START.match(s)]
-    if not writes:
+    sql = extract_sql(tool_input)
+    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and (WRITE_SQL.search(sql) or READ_ONLY_START.match(sql)):
+        statements = [s for s in re.split(r";", re.sub(r"--[^\n]*", "", sql)) if s.strip()]
+        writes = [s for s in statements if WRITE_SQL.search(s) or not READ_ONLY_START.match(s)]
+        if not writes:
+            return
+        if is_prod:
+            deny(f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge soltanto. (guardrail: database.md)")
+        check_unbounded_writes(sql)
+        if is_shared:
+            ask(f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone. Conferma?")
         return
 
-    if is_prod:
-        deny(f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge soltanto. (guardrail: database.md)")
-    check_unbounded_writes(sql)
-    if is_shared:
-        ask(f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone. Conferma?")
+    # Ogni altro server: Azure, GitHub, filesystem, ... L'intenzione sta nel nome
+    # del tool e nei campi che descrivono l'operazione; i parametri dicono se il
+    # bersaglio è produzione.
+    if MCP_READ_TOOL.match(tool):
+        return
+    operation = mcp_operation_text(tool, tool_input)
+    parameters = json.dumps(tool_input, ensure_ascii=False)
+    targets_prod = is_prod or matches_any(config["prod_patterns"], parameters) is not None
+
+    if MCP_DESTRUCTIVE.search(operation):
+        if targets_prod:
+            deny(f"operazione distruttiva via MCP {server!r} ({operation.strip()}) su un bersaglio di PRODUZIONE. Mai dall'agente.")
+        ask(f"operazione distruttiva via MCP {server!r}: {operation.strip()}. Cosa sparisce, e si può ricreare? Conferma.")
+    if MCP_MUTATING.search(operation):
+        if targets_prod:
+            deny(f"modifica via MCP {server!r} ({operation.strip()}) su un bersaglio di PRODUZIONE. In produzione si legge soltanto; le modifiche passano da un deploy o da un operatore umano.")
+        if is_shared:
+            ask(f"modifica via MCP {server!r} ({operation.strip()}) su un servizio condiviso. Conferma?")
 
 
 # ---------------------------------------------------------------------------
-# Write / Edit
+# Read / Write / Edit
 # ---------------------------------------------------------------------------
 
-SECRET_NAME = re.compile(r"^(\.env(\..+)?|\.secrets|.*\.pem|.*\.key|id_(rsa|ed25519|ecdsa|dsa)(\.pub)?|\.netrc|\.pgpass|\.my\.cnf)$")
+SECRET_NAME = re.compile(
+    r"^(\.env(\..+)?|\.secrets|.*\.pem|.*\.key|.*\.p12|.*\.pfx|id_(rsa|ed25519|ecdsa|dsa)(\.pub)?|\.netrc|\.pgpass|\.my\.cnf"
+    r"|\.htpasswd|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc)$"
+)
 SECRET_TEMPLATE = re.compile(r"\.(example|sample|template|dist)$")
+SECRET_DIRS = {".ssh", ".aws", ".azure", ".kube", ".gnupg"}
+SECRET_TAILS = ((".docker", "config.json"), ("gh", "hosts.yml"))
+
+# Sotto ~/.claude: ciò che governa il comportamento dell'agente. Il resto
+# (projects/, todos/, debug/...) è stato interno di Claude Code e non si tocca qui.
+CLAUDE_HOME_GOVERNANCE = {"settings.json", "settings.local.json", "CLAUDE.md", "keybindings.json"}
+CLAUDE_HOME_GOVERNANCE_DIRS = {"commands", "skills", "agents", "rules", "output-styles"}
+CLAUDE_HOME_CODE_DIRS = {"plugins", "hooks"}
 
 
 def target_path(tool_input: dict) -> Path | None:
@@ -346,6 +548,23 @@ def is_secret_file(name: str) -> bool:
     return bool(SECRET_NAME.match(name)) and not SECRET_TEMPLATE.search(name)
 
 
+def is_secret_path(path: Path) -> bool:
+    parts = path.parts
+    if any(part in SECRET_DIRS for part in parts):
+        return True
+    for parent, name in SECRET_TAILS:
+        if len(parts) >= 2 and parts[-1] == name and parts[-2] == parent:
+            return True
+    return is_secret_file(path.name)
+
+
+def relative_to_home(path: Path) -> Path | None:
+    try:
+        return path.resolve().relative_to(Path.home())
+    except (ValueError, OSError):
+        return None
+
+
 def check_read(tool_input: dict) -> None:
     """Le letture di segreti non dipendono più da permissions.deny nelle settings."""
     path = target_path(tool_input)
@@ -353,7 +572,7 @@ def check_read(tool_input: dict) -> None:
         return
     if any(part == ".ssh" for part in path.parts):
         deny(f"lettura dentro ~/.ssh ({path}): chiavi e configurazione SSH non passano dall'agente.")
-    if is_secret_file(path.name):
+    if is_secret_path(path):
         deny(
             f"lettura di un file di segreti ({path}): il contenuto finirebbe nella trascrizione, "
             "che resta su disco. Per il nome di una variabile leggi .env.example; per il valore, "
@@ -361,42 +580,69 @@ def check_read(tool_input: dict) -> None:
         )
 
 
-def check_write(tool_input: dict) -> None:
+def is_inside(path: Path, root: Path | None) -> bool:
+    if root is None:
+        return False
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def check_write(tool_input: dict, cwd: str) -> None:
     path = target_path(tool_input)
     if path is None:
         return
     raw = str(path)
     name = path.name
-    home = Path.home()
+    in_home = relative_to_home(path)
 
-    # La configurazione di guardrail non si modifica da soli: sarebbe il modo
-    # elegante di aggirare un blocco (RULES-CORE.md, regola 8).
+    # Blocchi secchi
+    if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$|\.p12$|\.pfx$", name)):
+        deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
+    if str(path).startswith("/etc/") or str(path).startswith("/usr/"):
+        deny(f"scrittura su un file di sistema ({raw}).")
+    if in_home is not None and in_home.parts[:1] == (".claude",) and len(in_home.parts) > 2 and in_home.parts[1] in CLAUDE_HOME_CODE_DIRS:
+        deny(
+            f"scrittura in ~/.claude/{in_home.parts[1]} ({raw}): è il codice dei hook e dei plugin, cioè di "
+            "guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+        )
+
+    # Conferme: la configurazione di guardrail e di Claude Code non si modifica da
+    # soli, sarebbe il modo elegante di aggirare un blocco (RULES-CORE.md, regola 8).
     if name == ".guardrail.json":
         ask(
             "modifica di .guardrail.json: cambia le regole di guardrail che ti vincolano. "
             "Decide l'utente, e il file va committato con la motivazione. (guardrail: RULES-CORE.md 8)"
         )
-    try:
-        relative_home = path.resolve().relative_to(home)
-    except (ValueError, OSError):
-        relative_home = None
-    if relative_home is not None and relative_home.parts[:1] == (".claude",) and name in (
-        "settings.json",
-        "settings.local.json",
+    if in_home is not None and in_home.parts[:1] == (".claude",) and (
+        (len(in_home.parts) == 2 and name in CLAUDE_HOME_GOVERNANCE)
+        or (len(in_home.parts) > 2 and in_home.parts[1] in CLAUDE_HOME_GOVERNANCE_DIRS)
     ):
         ask(
-            "modifica delle impostazioni di Claude Code: tocca permessi, hook e sandbox "
-            "dell'utente. Mostra il cambiamento e fallo approvare."
+            f"modifica della configurazione di Claude Code ({raw}): tocca permessi, hook, comandi o "
+            "istruzioni dell'utente. Mostra il cambiamento e fallo approvare."
         )
-
-    if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$", name)):
-        deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
-    if str(path).startswith("/etc/") or str(path).startswith("/usr/"):
-        deny(f"scrittura su un file di sistema ({raw}).")
-    if SECRET_NAME.match(name) and not SECRET_TEMPLATE.search(name):
+    if is_secret_path(path):
         ask(f"scrittura su un file di segreti ({raw}). Conferma che è voluto e che il file è gitignorato.")
-    if relative_home is not None and len(relative_home.parts) == 1 and relative_home.parts[0].startswith("."):
+    if in_home is not None and len(in_home.parts) == 1 and in_home.parts[0].startswith("."):
         ask(f"scrittura su un dotfile della home ({raw}): cambia l'ambiente dell'utente. Conferma?")
+
+    # Regola 5: nulla fuori dal progetto senza chiederlo. Lo scratchpad e lo
+    # stato interno di Claude Code (memoria, todo) sono aree di lavoro legittime.
+    root = project_root(cwd)
+    if root is None:
+        return
+    allowed = [root, Path("/tmp"), Path.home() / ".claude" / "projects"]
+    for env_key in ("TMPDIR", "TMP", "TEMP"):
+        if os.environ.get(env_key):
+            allowed.append(Path(os.environ[env_key]))
+    if not any(is_inside(path, base) for base in allowed):
+        ask(
+            f"scrittura fuori dal progetto ({raw}; progetto: {root}). La home, altri repo e le "
+            "directory di sistema si toccano solo su richiesta esplicita. Conferma? (guardrail: RULES-CORE.md 5)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -406,14 +652,15 @@ def check_write(tool_input: dict) -> None:
 def decide(payload: dict) -> None:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
-    config = load_config(payload.get("cwd", ""))
+    cwd = str(payload.get("cwd") or "")
+    config = load_config(cwd)
 
     if tool == "Bash":
-        check_bash(str(tool_input.get("command", "")), config)
+        check_bash(str(tool_input.get("command", "")), config, cwd)
     elif tool == "Read":
         check_read(tool_input)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-        check_write(tool_input)
+        check_write(tool_input, cwd)
     elif tool.startswith("mcp__"):
         check_mcp(tool, tool_input, config)
 
