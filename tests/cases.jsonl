@@ -111,8 +111,8 @@
 {"name": "Write nel progetto: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/app.js", "content": "x"}, "expect": "allow", "cwd": "/home/master/repos/progetto"}
 {"name": "Write fuori dal progetto (regola 5)", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/altro/note.txt", "content": "x"}, "expect": "ask", "cwd": "/home/master/repos/progetto"}
 {"name": "Write nello scratchpad: ok", "tool_name": "Write", "tool_input": {"file_path": "/tmp/claude-1000/scratchpad/appunti.md", "content": "x"}, "expect": "allow", "cwd": "/home/master/repos/progetto"}
-{"name": "Write nella memoria di Claude Code: ok", "tool_name": "Write", "tool_input": {"file_path": "/home/master/.claude/projects/-home-master-repos-progetto/memory/nota.md", "content": "x"}, "expect": "allow", "cwd": "/home/master/repos/progetto"}
-{"name": "Write sul codice del plugin", "tool_name": "Write", "tool_input": {"file_path": "/home/master/.claude/plugins/cache/7hemas7er-guardrail/guardrail/0.2.0/hooks/guard.py", "content": "x"}, "expect": "deny", "cwd": "/home/master/repos/progetto"}
+{"name": "Write nella memoria di Claude Code: ok", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/projects/-home-master-repos-progetto/memory/nota.md", "content": "x"}, "expect": "allow", "cwd": "/home/master/repos/progetto"}
+{"name": "Write sul codice del plugin", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/plugins/cache/7hemas7er-guardrail/guardrail/0.2.0/hooks/guard.py", "content": "x"}, "expect": "deny", "cwd": "/home/master/repos/progetto"}
 {"name": "Write su ~/.claude/CLAUDE.md", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/CLAUDE.md", "content": "x"}, "expect": "ask", "cwd": "/home/master/repos/progetto"}
 {"name": "Write su un comando utente", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/commands/deploy.md", "content": "x"}, "expect": "ask", "cwd": "/home/master/repos/progetto"}
 {"name": "Read di un dotfile non segreto: ok", "tool_name": "Read", "tool_input": {"file_path": "/home/master/.bashrc"}, "expect": "allow"}
