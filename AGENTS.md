@@ -11,8 +11,10 @@ avrebbero fermato: per questo il repo distribuisce anche hook che bloccano.
 
 - **Claude Code**: installa il plugin (vedi README). Le regole essenziali entrano
   nel contesto a ogni sessione; i comandi pericolosi vengono bloccati o messi in
-  conferma; la skill `guardrail` carica le regole del servizio interessato; il
-  comando `/guardrail:setup` configura il `.guardrail.json` del repo corrente.
+  conferma; la skill `guardrail` carica le regole del servizio interessato;
+  `/guardrail:check` verifica che il hook sia attivo, `/guardrail:setup`
+  configura il `.guardrail.json` del repo corrente, `/guardrail:log` riassume
+  cosa è stato bloccato.
 - **Altri strumenti**: clona il repo accanto ai progetti e importa `AGENTS.md`
   nel file di istruzioni del tuo strumento. Nessun blocco automatico: valgono
   solo le regole scritte.
