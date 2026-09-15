@@ -27,9 +27,13 @@ una stringa vuota e fallirebbe senza toccare nulla. Il hook però deve bloccarlo
 
 ## 2. Canarino sulla lettura di segreti
 
-Prova a leggere con il tool `Read` il file `.env.canary` nella root del progetto.
-Il file non esiste e non deve esistere: il hook deve rifiutare la lettura per il
-nome, prima ancora di cercarlo.
+Prova a leggere con il tool `Read` il file `guardrail-canary.pem` nella root del
+progetto. Il file non esiste e non deve esistere: il hook deve rifiutare la
+lettura per il nome, prima ancora di cercarlo.
+
+Non usare `.env.canary`: sulle macchine con le `permissions.deny` consigliate
+lo ferma Claude Code stesso, prima del hook, e l'esito non dice nulla sul hook.
+Un `.pem` è coperto solo dal hook, quindi il risultato è univoco.
 
 - Bloccato con `[guardrail] lettura di un file di segreti` → **attivo**.
 - Errore "file non trovato" → **il hook non presidia `Read`**: il matcher in
