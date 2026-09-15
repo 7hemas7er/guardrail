@@ -48,27 +48,40 @@ il comando: non risolve le variabili.
 
 | Azione | Esito |
 |---|---|
-| `rm -r` con bersaglio variabile (`$X`, `${X}`), `~`, `/home/<utente>`, radice di sistema, `.`, `..`, glob nascosti, `*` | BLOCCO |
+| `rm` (ricorsivo o no) con bersaglio variabile (`$X`, `${X}`), `~`, `/home/<utente>`, radice di sistema, `.`, `..`, glob nascosti, `*` | BLOCCO |
+| `find … -delete`, `find … -exec rm` | CONFERMA; BLOCCO se la radice del find è uno dei bersagli sopra |
 | `sudo rm` | BLOCCO |
-| `mkfs`, `dd of=/dev/`, `chmod 777`, `curl \| sh` | BLOCCO |
-| Scrittura (Write/Edit) su `~/.ssh/*`, chiavi private, `/etc`, `/usr` | BLOCCO |
-| Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`), `.secrets`, `.netrc`, `.pgpass` | CONFERMA |
-| Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
+| `sudo <qualunque altra cosa>` | CONFERMA |
+| `chmod`/`chown` ricorsivi sulla home o sulla radice | BLOCCO |
+| `mkfs`, `dd of=/dev/`, `chmod 777`, `curl \| sh`, `base64 -d \| sh` | BLOCCO |
 | `git clean -x` | BLOCCO |
-| Lettura (`Read`) di `.env*`, `.secrets`, chiavi, `.netrc`, `.pgpass`, o dentro `~/.ssh` | BLOCCO |
-| `cat`, `grep`, `head`, `sed`… su un file di segreti | BLOCCO |
+| Lettura (`Read`) di `.env*`, `.secrets`, chiavi, `.netrc`, `.pgpass`, `.npmrc`, `.git-credentials`, `~/.claude.json`, o dentro `~/.ssh`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.gnupg`, `~/.docker/config.json` | BLOCCO |
+| `cat`, `grep`, `head`, `sed`… sugli stessi file da shell | BLOCCO |
 | `source .env` | CONFERMA |
-| Scrittura su `.guardrail.json` o su `~/.claude/settings.json` | CONFERMA |
+| Scrittura da shell (`>`, `tee`, `cp`, `sed -i`…) sugli stessi file | CONFERMA |
+| Scrittura (Write/Edit) su `~/.ssh/*`, chiavi private, `/etc`, `/usr` | BLOCCO |
+| Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`) e sugli altri file di segreti | CONFERMA |
+| Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
+| Scrittura, da tool o da shell, su `.guardrail.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands|skills|agents|rules` | CONFERMA |
+| Scrittura, da tool o da shell, in `~/.claude/plugins` o `~/.claude/hooks` (il codice di guardrail stesso) | BLOCCO |
+| Scrittura (Write/Edit) fuori dal progetto corrente, dallo scratchpad e dalla memoria di Claude Code | CONFERMA |
 
 Le letture di segreti sono presidiate sia sul tool `Read` sia sulla shell: le
 `permissions.deny` delle impostazioni valgono solo per `Read`, e un `cat .env`
 passerebbe. Tenerle resta utile come difesa in profondità.
 
-La conferma sulla scrittura di `.guardrail.json` e delle impostazioni di Claude
-Code serve a una cosa sola: un agente che ha ricevuto un blocco non può allentare
-da solo le regole che lo vincolano (regola 8).
+Le conferme e i blocchi sulla configurazione di guardrail e di Claude Code — dal
+tool e dalla shell, perché `echo '{}' > .guardrail.json` è una scrittura quanto
+una `Write` — servono a una cosa sola: un agente che ha ricevuto un blocco non
+può allentare da solo le regole che lo vincolano (regola 8).
 
-Un limite noto: il hook legge il comando come testo, quindi un documento che
-*cita* un comando pericoloso dentro un heredoc viene bloccato come se lo
-eseguisse. Per scrivere file che contengono esempi di comandi, usa gli strumenti
-di modifica file dell'agente invece di `cat > file <<EOF`.
+L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
+directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede
+una conferma. Lo scratchpad della sessione e la memoria di Claude Code
+(`~/.claude/projects`) sono aree di lavoro legittime e non la richiedono.
+
+Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`) contiene dati, e
+il hook non lo legge come comandi — citare `rm -rf ~` in una guida non è
+eseguirlo. Uno che alimenta un interprete (`bash <<EOF`, `python - <<PY`) resta
+comandi a tutti gli effetti. Uno script scritto su file e poi lanciato viene
+scansionato al momento del lancio (vedi deploy-infrastruttura.md).

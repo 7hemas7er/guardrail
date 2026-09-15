@@ -51,3 +51,12 @@ chiami semplicemente `postgres`, senza "prod". Ogni repo dichiara i suoi.
 | `redis-cli FLUSHALL` / `FLUSHDB` | BLOCCO |
 | `artisan migrate:fresh`, `db:wipe`, `migrate:reset` | BLOCCO |
 | `artisan migrate:rollback`, `db:seed --class=RolePermissionSeeder` | CONFERMA |
+| Tool MCP non SQL con operazione distruttiva (`delete`, `drop`, `purge`, `reset`…) su un server di produzione, o con parametri che corrispondono a `prod_patterns` | BLOCCO |
+| Stessa operazione su qualunque altro server | CONFERMA |
+| Tool MCP non SQL con operazione di modifica (`create`, `update`, `restart`, `scale`…) su produzione | BLOCCO |
+| Stessa operazione su un server in `ask_mcp_servers` | CONFERMA |
+
+Per i server MCP non SQL (Azure, GitHub, filesystem…) l'intenzione si legge dal
+nome del tool e dai campi che descrivono l'operazione (`command`, `action`,
+`method`, `state`); i tool di sola lettura (`get_*`, `list_*`, `search_*`) non
+vengono toccati.

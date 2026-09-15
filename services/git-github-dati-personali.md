@@ -54,6 +54,10 @@ minori. Valgono queste regole a prescindere dal repo.
 | `git push --force-with-lease` | CONFERMA |
 | `git clean -x` / `-X` | BLOCCO |
 | `git clean -f`, `git reset --hard`, `git checkout -- .`, `git restore .` | CONFERMA |
+| `git push --delete`, refspec `:branch` (cancella un branch o un tag sul remoto) | CONFERMA |
+| `git branch -D`, `git stash drop`, `git stash clear` | CONFERMA |
+| Tool MCP GitHub che chiude, cancella o archivia (`state: closed`, `delete_*`) | CONFERMA |
+| Tool MCP GitHub che modifica un repo marcato produzione in `prod_patterns` | BLOCCO |
 
 Le regole sui dati personali sono di condotta: nessun hook può riconoscere un
 codice fiscale in una query. Le fa rispettare l'agente, e chi lo controlla.
