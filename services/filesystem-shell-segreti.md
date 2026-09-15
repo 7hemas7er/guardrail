@@ -48,7 +48,8 @@ il comando: non risolve le variabili.
 
 | Azione | Esito |
 |---|---|
-| `rm` (ricorsivo o no) con bersaglio variabile (`$X`, `${X}`), `~`, `/home/<utente>`, radice di sistema, `.`, `..`, glob nascosti, `*` | BLOCCO |
+| `rm -r` con bersaglio variabile (`$X`, `${X}`), e `rm` (ricorsivo o no) su `~`, `/home/<utente>`, radice di sistema, `.`, `..`, glob nascosti, `*` | BLOCCO |
+| `rm` non ricorsivo con bersaglio variabile (`rm -f "$FILE"`) | CONFERMA |
 | `find … -delete`, `find … -exec rm` | CONFERMA; BLOCCO se la radice del find è uno dei bersagli sopra |
 | `sudo rm` | BLOCCO |
 | `sudo <qualunque altra cosa>` | CONFERMA |

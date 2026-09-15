@@ -9,7 +9,9 @@
 {"name": "rm -rf path letterale assoluto in /tmp: ok", "tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/claude-1000/x/scratchpad/sim/home"}, "expect": "allow"}
 {"name": "rm singolo file: ok", "tool_name": "Bash", "tool_input": {"command": "rm -f build.log"}, "expect": "allow"}
 {"name": "rm non ricorsivo su ~", "tool_name": "Bash", "tool_input": {"command": "rm -f ~/.bashrc"}, "expect": "deny"}
-{"name": "rm non ricorsivo su variabile", "tool_name": "Bash", "tool_input": {"command": "rm -f \"$TMPFILE\""}, "expect": "deny"}
+{"name": "rm non ricorsivo su variabile: conferma", "tool_name": "Bash", "tool_input": {"command": "rm -f \"$TMPFILE\""}, "expect": "ask"}
+{"name": "rm non ricorsivo su variabile e su ~: blocco", "tool_name": "Bash", "tool_input": {"command": "rm -f \"$TMPFILE\" ~/.bashrc"}, "expect": "deny"}
+{"name": "rm ricorsivo su variabile resta blocco", "tool_name": "Bash", "tool_input": {"command": "rm -r \"$BUILD_DIR\""}, "expect": "deny"}
 {"name": "sudo rm", "tool_name": "Bash", "tool_input": {"command": "sudo rm -rf /var/lib/docker"}, "expect": "deny"}
 {"name": "sudo qualunque", "tool_name": "Bash", "tool_input": {"command": "sudo apt-get install -y jq"}, "expect": "ask"}
 {"name": "find -delete nel progetto", "tool_name": "Bash", "tool_input": {"command": "find . -name '*.pyc' -delete"}, "expect": "ask"}
