@@ -386,8 +386,21 @@ def check_protected_writes(text: str) -> None:
 # Un heredoc che scrive su file (cat > x <<EOF, tee x <<EOF) contiene dati, non
 # comandi: citare `git push --force` in un README non è eseguirlo. Un heredoc che
 # alimenta un interprete (bash <<EOF, python - <<PY) resta comandi e non si tocca.
+# Testa di un heredoc che *archivia* il corpo invece di eseguirlo. Due forme:
+#   redirezione o tee     `cat > docs/git.md <<EOF`
+#   git/gh che legge -    `git commit -F - <<EOF`, `gh issue create --body-file - <<EOF`
+# git e gh con `-F -` prendono lo stdin come testo da archiviare, mai da eseguire:
+# un messaggio di commit che *descrive* un comando bloccato non lo esegue, ed è la
+# forma normale in cui questo repo documenta i propri blocchi. `bash <<EOF` resta
+# fuori, e il suo corpo continua a essere analizzato. La riga di testa e tutto ciò
+# che segue il tag di chiusura restano comunque analizzati, in ogni caso.
+HEREDOC_DATA_HEAD = (
+    r"(?:>>?\s*\S+|\btee\b"
+    r"|\b(?:git|gh)\b[^\n]*?(?:--body-file|--notes-file|--file|-F)[=\s]+-(?=\s))"
+)
 HEREDOC = re.compile(
-    r"(?P<head>^[^\n]*?(?:>>?\s*\S+|\btee\b)[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
+    r"(?P<head>^[^\n]*?" + HEREDOC_DATA_HEAD + r"[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
 
