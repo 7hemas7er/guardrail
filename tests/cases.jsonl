@@ -65,6 +65,11 @@
 {"name": "allow_commands esenta", "tool_name": "Bash", "tool_input": {"command": "echo GUARDRAIL_OK && rm -rf \"$X\""}, "expect": "allow"}
 {"name": "cat .env", "tool_name": "Bash", "tool_input": {"command": "cat .env"}, "expect": "deny"}
 {"name": "cat .env.example: ok", "tool_name": "Bash", "tool_input": {"command": "cat .env.example"}, "expect": "allow"}
+{"name": "template con suffisso composto (.env.azure.example): ok", "tool_name": "Bash", "tool_input": {"command": "cat .env.azure.example"}, "expect": "allow"}
+{"name": "template con suffisso composto (.env.production.example): ok", "tool_name": "Bash", "tool_input": {"command": "cat .env.production.example"}, "expect": "allow"}
+{"name": "template annidato (.env.test.azure.example): ok", "tool_name": "Bash", "tool_input": {"command": "cat config/.env.test.azure.example"}, "expect": "allow"}
+{"name": ".env.local resta un segreto", "tool_name": "Bash", "tool_input": {"command": "cat .env.local"}, "expect": "deny"}
+{"name": ".env.azure.local resta un segreto", "tool_name": "Bash", "tool_input": {"command": "cat .env.azure.local"}, "expect": "deny"}
 {"name": "grep in .env.production", "tool_name": "Bash", "tool_input": {"command": "grep -n DB_PASSWORD .env.production"}, "expect": "deny"}
 {"name": "cat di una chiave privata", "tool_name": "Bash", "tool_input": {"command": "cat certs/server.key"}, "expect": "deny"}
 {"name": "cat ~/.claude.json (token OAuth)", "tool_name": "Bash", "tool_input": {"command": "cat ~/.claude.json"}, "expect": "deny"}

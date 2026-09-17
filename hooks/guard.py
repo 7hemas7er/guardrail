@@ -203,8 +203,11 @@ def check_rm(cmd: str) -> None:
 # Bash: segreti e configurazione
 # ---------------------------------------------------------------------------
 
+# `\.env(?:\.[\w-]+)*` prende la catena *intera* dei suffissi: con un solo
+# segmento `.env.azure.example` si fermerebbe a `.env.azure`, e l'esenzione
+# template (ancorata in fondo) non vedrebbe mai `.example`.
 SECRET_FILE = re.compile(
-    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)?|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
+    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)*|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
     r"|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc"
     r"|\.aws/credentials|\.docker/config\.json|\.kube/config|gh/hosts\.yml|\.gnupg/[^\s\"']+"
     r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
