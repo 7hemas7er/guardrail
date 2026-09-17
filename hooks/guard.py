@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -221,13 +222,84 @@ PROTECTED_PATH = re.compile(
     r"(?:^|[\s/\"'=])(?P<path>\.guardrail\.json|\.claude/settings(?:\.local)?\.json|\.claude/CLAUDE\.md"
     r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)"
 )
-SHELL_WRITERS = re.compile(
-    r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b|>>?"
+SHELL_WRITER_CMDS = re.compile(
+    r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b"
 )
+
+# Chi scrive, e *dove*. Nominare un path non è modificarlo: `ls .claude/hooks/`
+# legge, `cp .claude/hooks/x /tmp/` copia *da* lì. Conta la direzione, cioè quali
+# operandi sono bersaglio della scrittura:
+#   all      ogni operando (rm, tee, chmod: sono tutti bersagli)
+#   last     solo l'ultimo (cp, mv, ln, rsync, install: gli altri sono sorgenti)
+#   inplace  solo se c'è il flag di modifica sul posto (sed -i, perl -pi)
+#   of       solo l'operando of= (dd)
+#   opaque   non ispezionabile da fuori (python, node): tutti, per prudenza
+WRITER_TARGETS = {
+    "tee": "all", "rm": "all", "rmdir": "all", "shred": "all", "truncate": "all",
+    "mkdir": "all", "touch": "all", "chmod": "all", "chown": "all", "chattr": "all",
+    "cp": "last", "mv": "last", "ln": "last", "rsync": "last", "install": "last",
+    "sed": "inplace", "perl": "inplace",
+    "dd": "of",
+    "python": "opaque", "python3": "opaque", "node": "opaque",
+}
+# Quel che sta *prima* del vero comando: `sudo -u deploy rm x`, `FOO=1 tee y`.
+COMMAND_PREFIX = re.compile(r"^(?:sudo|command|env|nohup|time|xargs|\w+=.*)$")
+PREFIX_VALUE_FLAGS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-n", "-I"}
+IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
+# Il bersaglio di una redirezione è il token che la segue, non il comando che la
+# contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
+REDIRECT = re.compile(r"(?:^|\s)\d*>>?\s*(?P<target>[^\s;&|<>()]+)")
 
 
 def shell_segments(text: str) -> list[str]:
     return [s for s in re.split(r"[;&|\n]+|\$\(|\)", text) if s.strip()]
+
+
+def redirect_targets(segment: str) -> list[str]:
+    return [m.group("target") for m in REDIRECT.finditer(segment)]
+
+
+def shell_tokens(segment: str) -> list[str]:
+    """Token del comando, tolte le redirezioni. Virgolette sbilanciate: best effort."""
+    cleaned = REDIRECT.sub(" ", segment)
+    try:
+        return shlex.split(cleaned)
+    except ValueError:
+        return cleaned.split()
+
+
+def write_targets(segment: str) -> list[str]:
+    """Gli operandi su cui il comando *scrive*. Un comando di lettura non ne ha."""
+    targets = redirect_targets(segment)
+    tokens = shell_tokens(segment)
+    seen_prefix = False
+    while tokens:
+        if COMMAND_PREFIX.match(tokens[0]):
+            tokens.pop(0)
+            seen_prefix = True
+            continue
+        # I flag di sudo/env/xargs, non quelli del comando vero.
+        if seen_prefix and tokens[0].startswith("-"):
+            flag = tokens.pop(0)
+            if flag in PREFIX_VALUE_FLAGS and tokens:
+                tokens.pop(0)
+            continue
+        break
+    if not tokens:
+        return targets
+    mode = WRITER_TARGETS.get(os.path.basename(tokens[0]))
+    if mode is None:
+        return targets
+    args = tokens[1:]
+    flags = [a for a in args if a.startswith("-")]
+    operands = [a for a in args if not a.startswith("-")]
+    if mode == "of":
+        return targets + [a.split("=", 1)[1] for a in args if a.startswith("of=")]
+    if mode == "inplace" and not any(IN_PLACE_FLAG.match(f) for f in flags):
+        return targets
+    if mode == "last" and not any(f in ("-t", "--target-directory") for f in flags):
+        operands = operands[-1:]
+    return targets + operands
 
 
 def check_secret_reads(text: str) -> None:
@@ -250,25 +322,28 @@ def check_secret_reads(text: str) -> None:
                 f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
                 "del comando. Conferma che è voluto?"
             )
-        if SHELL_WRITERS.search(segment):
+        # cp/mv/ln restano presi in *entrambe* le direzioni: `cp .env x && cat x`
+        # ricicla il nome. Le redirezioni no: contano solo se scrivono sul segreto.
+        if SHELL_WRITER_CMDS.search(segment) or any(SECRET_FILE.search(t) for t in redirect_targets(segment)):
             ask(f"scrittura da shell su un file di segreti ({found[0]}). Conferma che è voluto e che il file è gitignorato.")
 
 
 def check_protected_writes(text: str) -> None:
     for segment in shell_segments(text):
-        match = PROTECTED_PATH.search(segment)
-        if not match or not SHELL_WRITERS.search(segment):
-            continue
-        path = match.group("path")
-        if match.group("plugin"):
-            deny(
-                f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
-                "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+        for target in write_targets(segment):
+            match = PROTECTED_PATH.search(target)
+            if not match:
+                continue
+            path = match.group("path")
+            if match.group("plugin"):
+                deny(
+                    f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
+                    "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+                )
+            ask(
+                f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
+                "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
             )
-        ask(
-            f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
-            "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
-        )
 
 
 # ---------------------------------------------------------------------------
