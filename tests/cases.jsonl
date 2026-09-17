@@ -88,6 +88,14 @@
 {"name": "sudo con flag prima del comando che scrive", "tool_name": "Bash", "tool_input": {"command": "sudo -u deploy truncate -s 0 ~/.claude/settings.json"}, "expect": "ask"}
 {"name": "dd of= verso le settings", "tool_name": "Bash", "tool_input": {"command": "dd if=/tmp/claude/s.json of=/home/master/.claude/settings.json"}, "expect": "ask"}
 {"name": "ls -la .env con 2>/dev/null non stampa il contenuto: ok", "tool_name": "Bash", "tool_input": {"command": "ls -la .env 2>/dev/null"}, "expect": "allow"}
+{"name": "falso positivo 2026-09-17: il pattern di grep non è un file", "tool_name": "Bash", "tool_input": {"command": "grep -n \"\\.env\\|\\.pem\\|secret\" tests/cases.jsonl"}, "expect": "allow"}
+{"name": "rg con .pem nel pattern su una directory", "tool_name": "Bash", "tool_input": {"command": "rg \"\\.pem$\" hooks/"}, "expect": "allow"}
+{"name": "grep col pattern da -e: l'operando resta un file", "tool_name": "Bash", "tool_input": {"command": "grep -e DB_PASSWORD .env"}, "expect": "deny"}
+{"name": "awk sul contenuto di .env", "tool_name": "Bash", "tool_input": {"command": "awk -F= '{print $1}' .env"}, "expect": "deny"}
+{"name": "redirect che scrive dentro .env", "tool_name": "Bash", "tool_input": {"command": "echo 'APP_KEY=x' > .env"}, "expect": "ask"}
+{"name": "echo di un nome di segreto senza leggerlo: ok", "tool_name": "Bash", "tool_input": {"command": "echo 'ricordati di copiare .env nel worktree'"}, "expect": "allow"}
+{"name": "cp .env nel worktree: il riciclo del nome resta preso", "tool_name": "Bash", "tool_input": {"command": "cp .env ../worktree-pr/.env"}, "expect": "ask"}
+{"name": "symlink a .env: resta preso", "tool_name": "Bash", "tool_input": {"command": "ln -s ../progetto/.env .env"}, "expect": "ask"}
 {"name": "heredoc che scrive documentazione con comandi citati: ok", "tool_name": "Bash", "tool_input": {"command": "cat > docs/git.md <<'EOF'\n# Regole\nMai `git push --force` su main. Mai `rm -rf ~`.\nEOF"}, "expect": "allow"}
 {"name": "heredoc che alimenta bash", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\nrm -rf ~/.cache\nEOF"}, "expect": "deny"}
 {"name": "script invocato con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask"}

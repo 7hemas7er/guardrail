@@ -215,6 +215,11 @@ SECRET_READERS = re.compile(
     r"\b(cat|bat|tac|less|more|head|tail|nl|od|xxd|strings|grep|egrep|fgrep|rg|ag|awk|sed|cut|base64|jq|tee)\b"
 )
 SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
+# Comandi il cui primo operando è un'espressione, non un file: in
+# `grep "\.env" casi.jsonl` quel `.env` è una regex e non si legge nessun segreto.
+PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "perl"}
+# ...a meno che il pattern arrivi da un flag: allora ogni operando è un file.
+PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file", "--expression"}
 
 # File che governano guardrail e Claude Code: modificarli da shell è il modo di
 # aggirare un blocco senza passare da Write/Edit.
@@ -302,30 +307,55 @@ def write_targets(segment: str) -> list[str]:
     return targets + operands
 
 
+def secret_names(values: list[str]) -> list[str]:
+    """I nomi di file di segreti fra `values`, esclusi i template (.env.example)."""
+    return [
+        m.group(0)
+        for value in values
+        for m in SECRET_FILE.finditer(value)
+        if not SECRET_TEMPLATE.search(m.group(0))
+    ]
+
+
+def file_operands(segment: str) -> list[str]:
+    """Gli operandi che il comando tratta come file, senza il pattern di grep/sed/awk."""
+    tokens = shell_tokens(segment)
+    while tokens and COMMAND_PREFIX.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return []
+    args = tokens[1:]
+    operands = [a for a in args if not a.startswith("-")]
+    if os.path.basename(tokens[0]) in PATTERN_COMMANDS and not any(
+        a in PATTERN_FLAGS or a.split("=", 1)[0] in PATTERN_FLAGS for a in args
+    ):
+        operands = operands[1:]
+    return operands
+
+
 def check_secret_reads(text: str) -> None:
     """Blocca `cat .env` e affini: permissions.deny copre il tool Read, non la shell."""
     for segment in shell_segments(text):
-        found = [
-            m.group(0) for m in SECRET_FILE.finditer(segment)
-            if not SECRET_TEMPLATE.search(m.group(0))
-        ]
-        if not found:
+        found = secret_names(file_operands(segment))
+        written = secret_names(redirect_targets(segment))
+        if not found and not written:
             continue
-        if SECRET_READERS.search(segment):
+        if found and SECRET_READERS.search(segment):
             deny(
                 f"lettura di un file di segreti da shell ({found[0]}): il contenuto finirebbe "
                 "nella trascrizione, che resta su disco. Per il nome di una variabile leggi "
                 ".env.example; per il valore, chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
             )
-        if SECRET_SOURCERS.search(segment):
+        if found and SECRET_SOURCERS.search(segment):
             ask(
                 f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
                 "del comando. Conferma che è voluto?"
             )
         # cp/mv/ln restano presi in *entrambe* le direzioni: `cp .env x && cat x`
         # ricicla il nome. Le redirezioni no: contano solo se scrivono sul segreto.
-        if SHELL_WRITER_CMDS.search(segment) or any(SECRET_FILE.search(t) for t in redirect_targets(segment)):
-            ask(f"scrittura da shell su un file di segreti ({found[0]}). Conferma che è voluto e che il file è gitignorato.")
+        if written or (found and SHELL_WRITER_CMDS.search(segment)):
+            name = (written + found)[0]
+            ask(f"scrittura da shell su un file di segreti ({name}). Conferma che è voluto e che il file è gitignorato.")
 
 
 def check_protected_writes(text: str) -> None:
