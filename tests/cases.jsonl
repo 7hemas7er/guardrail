@@ -103,6 +103,10 @@
 {"name": "symlink a .env: resta preso", "tool_name": "Bash", "tool_input": {"command": "ln -s ../progetto/.env .env"}, "expect": "ask"}
 {"name": "heredoc che scrive documentazione con comandi citati: ok", "tool_name": "Bash", "tool_input": {"command": "cat > docs/git.md <<'EOF'\n# Regole\nMai `git push --force` su main. Mai `rm -rf ~`.\nEOF"}, "expect": "allow"}
 {"name": "heredoc che alimenta bash", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\nrm -rf ~/.cache\nEOF"}, "expect": "deny"}
+{"name": "messaggio di commit che cita un comando bloccato: ok", "tool_name": "Bash", "tool_input": {"command": "git commit -F - <<'EOF'\nfix: documenta il blocco\n\nIl guard nega `cat .env.production` e `rm -rf ~`, ed e' giusto cosi'.\nEOF"}, "expect": "allow"}
+{"name": "corpo di una issue che cita un comando bloccato: ok", "tool_name": "Bash", "tool_input": {"command": "gh issue create --body-file - <<'EOF'\nRipro: `cat .env` viene negato.\nEOF"}, "expect": "allow"}
+{"name": "heredoc di dati non copre la riga di testa", "tool_name": "Bash", "tool_input": {"command": "rm -rf ~ && git commit -F - <<'EOF'\nmessaggio innocuo\nEOF"}, "expect": "deny"}
+{"name": "heredoc di dati non copre cio' che segue il tag", "tool_name": "Bash", "tool_input": {"command": "git commit -F - <<'EOF'\nmessaggio innocuo\nEOF\nrm -rf \"$BUILD\""}, "expect": "deny"}
 {"name": "script invocato con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask"}
 {"name": "script invocato direttamente con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/pericoloso.sh"}, "expect": "ask"}
 {"name": "script invocato innocuo: ok", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/innocuo.sh"}, "expect": "allow"}
