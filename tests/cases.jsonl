@@ -79,6 +79,15 @@
 {"name": "cat .guardrail.json: ok", "tool_name": "Bash", "tool_input": {"command": "cat .guardrail.json"}, "expect": "allow"}
 {"name": "tee sulle settings di Claude Code", "tool_name": "Bash", "tool_input": {"command": "cat nuove.json | tee ~/.claude/settings.json"}, "expect": "ask"}
 {"name": "cp sul codice del plugin", "tool_name": "Bash", "tool_input": {"command": "cp guard.py ~/.claude/plugins/cache/7hemas7er-guardrail/guardrail/0.2.0/hooks/guard.py"}, "expect": "deny"}
+{"name": "falso positivo 2026-09-17: ls sul plugin con 2>/dev/null legge", "tool_name": "Bash", "tool_input": {"command": "ls -la ~/.claude/plugins/cache/7hemas7er-guardrail/guardrail/0.3.1/ 2>/dev/null"}, "expect": "allow"}
+{"name": "falso positivo 2026-09-17: grep dentro i plugin legge", "tool_name": "Bash", "tool_input": {"command": "grep -rn \"secret-file\" ~/.claude/plugins --include=*.py"}, "expect": "allow"}
+{"name": "cp dal codice del plugin verso altrove: legge", "tool_name": "Bash", "tool_input": {"command": "cp ~/.claude/plugins/cache/g/hooks/guard.py /tmp/claude/guard.py"}, "expect": "allow"}
+{"name": "cp verso il codice del plugin: scrive", "tool_name": "Bash", "tool_input": {"command": "cp /tmp/claude/guard.py ~/.claude/plugins/cache/g/hooks/guard.py"}, "expect": "deny"}
+{"name": "sed -n sulle settings: legge", "tool_name": "Bash", "tool_input": {"command": "sed -n '1,20p' ~/.claude/settings.json"}, "expect": "allow"}
+{"name": "append sulle settings di Claude Code", "tool_name": "Bash", "tool_input": {"command": "echo '{}' >> ~/.claude/settings.json"}, "expect": "ask"}
+{"name": "sudo con flag prima del comando che scrive", "tool_name": "Bash", "tool_input": {"command": "sudo -u deploy truncate -s 0 ~/.claude/settings.json"}, "expect": "ask"}
+{"name": "dd of= verso le settings", "tool_name": "Bash", "tool_input": {"command": "dd if=/tmp/claude/s.json of=/home/master/.claude/settings.json"}, "expect": "ask"}
+{"name": "ls -la .env con 2>/dev/null non stampa il contenuto: ok", "tool_name": "Bash", "tool_input": {"command": "ls -la .env 2>/dev/null"}, "expect": "allow"}
 {"name": "heredoc che scrive documentazione con comandi citati: ok", "tool_name": "Bash", "tool_input": {"command": "cat > docs/git.md <<'EOF'\n# Regole\nMai `git push --force` su main. Mai `rm -rf ~`.\nEOF"}, "expect": "allow"}
 {"name": "heredoc che alimenta bash", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\nrm -rf ~/.cache\nEOF"}, "expect": "deny"}
 {"name": "script invocato con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask"}
