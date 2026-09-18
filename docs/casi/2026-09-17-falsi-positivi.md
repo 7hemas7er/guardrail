@@ -134,6 +134,32 @@ quello.
 
 ---
 
+## 4-bis. Il giorno dopo, stesso difetto su un altro comando (2026-09-18)
+
+Il problema 1 non era limitato al path dei plugin: la stessa lettura testuale c'era in
+`check_sql_cli`. Lavorando su questo repo, due comandi di sola lettura bloccati in mezz'ora:
+
+```bash
+grep -n "pg_dump\|dropdb\|prod_patterns" hooks/guard.py     # cerca, non esegue
+python3 - <<'PY' … if re.search(r"\bdropdb\b", text): … PY  # patch al hook stesso
+```
+
+Entrambi negati con «`dropdb`: cancella un database intero». Di nuovo: il guard blocca chi lo
+sta riparando, e la riparazione passa solo dal tool `Read`/`Edit`, cioè dalla strada che quella
+regola non guarda.
+
+**Fix applicato** (commit `fix(hook): un comando SQL citato non è un comando SQL eseguito`): i nomi
+dei CLI contano solo in **posizione di comando**, non ovunque nel testo. Restano presi il comando
+diretto, quello dopo una pipe, quello preceduto da variabili d'ambiente e quello dentro un heredoc
+che alimenta un interprete.
+
+**Nota che vale per tutta la sessione**: il hook attivo è il **plugin installato**
+(`~/.claude/plugins/cache/…/0.3.3/`), non il repo. Le correzioni qui dentro non hanno effetto
+finché non si aggiorna il plugin, e chi sviluppa guardrail resta bloccato dalla versione vecchia
+mentre scrive quella nuova. Vale la pena dirlo nel README.
+
+---
+
 ## 5. Nota di merito, non di codice
 
 I due guard hanno **due vocabolari diversi**: guardrail parla italiano con prefisso `[guardrail]` e cita
