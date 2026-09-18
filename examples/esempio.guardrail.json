@@ -21,5 +21,12 @@
     "az containerapp (update|revision|delete)",
     "gh workflow run[^;|]*deploy-frontend"
   ],
-  "allow_commands": []
+  "allow_commands": [],
+  "_allow_scripts": "Script letti e approvati: l'esenzione vale finche' il contenuto resta quello. L'impronta si ottiene con `sha256sum scripts/build.sh` dopo averlo letto; se lo script cambia torna la conferma. Una voce senza sha256 non esenta niente.",
+  "allow_scripts": [
+    {
+      "path": "scripts/build\\.sh",
+      "sha256": "625f88e43b64baae03eff3c2a39e771eae5026455f53fed9b304ecc3d2d4b45f"
+    }
+  ]
 }

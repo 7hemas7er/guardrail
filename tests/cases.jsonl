@@ -176,3 +176,8 @@
 {"name": "config del repo: git status resta libero", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "git status --short"}, "expect": "allow"}
 {"name": "config del repo: scrittura MCP su Azure bloccata", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__containerapps", "tool_input": {"command": "update", "name": "app-qualsiasi"}, "expect": "deny"}
 {"name": "config del repo: lettura MCP su Azure permessa", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__group_list", "tool_input": {"subscription": "abc"}, "expect": "allow"}
+{"name": "allow_scripts: script approvato con impronta giusta", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/approvato.sh"}, "expect": "allow"}
+{"name": "allow_scripts: approvato ma modificato, torna la conferma", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask", "reason_contains": "allow_scripts, ma il suo contenuto"}
+{"name": "allow_scripts: una voce senza impronta non esenta", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/senza_impronta.sh"}, "expect": "ask", "reason_contains": "non dichiara sha256"}
+{"name": "allow_scripts non batte deny_commands", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/approvato_ma_vietato.sh"}, "expect": "deny"}
+{"name": "allow_scripts vale per il contenuto, non per il comando che lo lancia", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"$X\" && bash tests/fixtures/approvato.sh"}, "expect": "deny"}

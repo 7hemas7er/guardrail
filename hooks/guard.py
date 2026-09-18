@@ -25,6 +25,7 @@ Solo libreria standard. Nessuna dipendenza, nessuna rete.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -49,7 +50,13 @@ DEFAULT_CONFIG = {
     "deny_commands": [],
     "ask_commands": [],
     "allow_commands": [],
+    # Script già letti e approvati: {"path": regex, "sha256": impronta}. Esentano
+    # solo la scansione del contenuto, e solo finché il contenuto non cambia.
+    "allow_scripts": [],
 }
+
+# Le voci di queste chiavi sono oggetti, non regex: non vanno convertite in stringa.
+OBJECT_KEYS = frozenset({"allow_scripts"})
 
 WRITE_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|REPLACE|MERGE|RENAME|VACUUM\s+FULL)\b",
@@ -90,7 +97,7 @@ def load_config(cwd: str) -> dict:
     for source in sources:
         for key, value in _read_json(source).items():
             if key in config and isinstance(value, list):
-                config[key].extend(str(item) for item in value)
+                config[key].extend(value if key in OBJECT_KEYS else (str(item) for item in value))
     return config
 
 
@@ -433,6 +440,39 @@ def invoked_scripts(text: str, cwd: str) -> list[Path]:
     return found
 
 
+def script_approvato(path: Path, content: str, config: dict) -> str:
+    """Lo script è in `allow_scripts` di `.guardrail.json`?
+
+    Quattro risposte: "si" (path e impronta corrispondono), "cambiato" (il path è
+    stato approvato, ma il contenuto non è più quello), "senza-impronta" (la voce
+    non dichiara un sha256, quindi non approva niente), "no".
+
+    L'approvazione è legata al **contenuto**, non al nome: uno script approvato
+    oggi e modificato domani torna a chiedere conferma. È la differenza fra
+    «questo script l'ho letto» e «di questo file mi fido per sempre», e il
+    2026-09-11 è nato da uno script di deploy che nessuno aveva riletto.
+    """
+    impronta = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    esito = "no"
+    for voce in config["allow_scripts"]:
+        if isinstance(voce, str):
+            voce = {"path": voce}
+        if not isinstance(voce, dict) or not voce.get("path"):
+            continue
+        if matches_any([str(voce["path"])], str(path)) is None:
+            continue
+        dichiarata = str(voce.get("sha256", "")).lower()
+        # Senza impronta non si esenta niente: dichiararla è il modo di dire
+        # "ho letto *questo* contenuto".
+        if not dichiarata:
+            esito = "senza-impronta"
+            continue
+        if dichiarata == impronta:
+            return "si"
+        esito = "cambiato"
+    return esito
+
+
 def check_scripts(text: str, config: dict, cwd: str) -> None:
     """Uno script lanciato è un comando che il hook altrimenti non vedrebbe."""
     for path in invoked_scripts(text, cwd):
@@ -440,14 +480,30 @@ def check_scripts(text: str, config: dict, cwd: str) -> None:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        approvazione = script_approvato(path, content, config)
         try:
             check_bash(content, config, cwd, depth=1)
         except Decision as found:
+            # `deny_commands` non si esenta: è la lista "questo non si lancia
+            # mai", e vale anche dentro uno script approvato.
             if found.reason.startswith("comando vietato dalla configurazione"):
                 deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
+            if approvazione == "si":
+                continue
+            avviso = ""
+            if approvazione == "cambiato":
+                avviso = (
+                    f" ATTENZIONE: {path.name} è in allow_scripts, ma il suo contenuto non è più quello "
+                    "approvato — l'impronta in .guardrail.json non corrisponde."
+                )
+            elif approvazione == "senza-impronta":
+                avviso = (
+                    f" Nota: la voce di allow_scripts per {path.name} non dichiara sha256, quindi non "
+                    "esenta niente. Aggiungi l'impronta dello script che hai letto."
+                )
             ask(
                 f"lo script {path.name} contiene un comando che guardrail bloccherebbe se lanciato "
-                f"direttamente — {found.reason} Leggilo, mostralo all'utente, e decida lui."
+                f"direttamente — {found.reason} Leggilo, mostralo all'utente, e decida lui.{avviso}"
             )
 
 

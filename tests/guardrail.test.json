@@ -4,5 +4,22 @@
   "prod_patterns": ["db-produzione\\.esempio\\.com", "\\bappdb\\b(?!_)"],
   "deny_commands": ["scripts/deploy/(promote-to-production|rollback-production)\\.sh"],
   "ask_commands": ["scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh"],
-  "allow_commands": ["^echo GUARDRAIL_OK"]
+  "allow_commands": ["^echo GUARDRAIL_OK"],
+  "allow_scripts": [
+    {
+      "path": "tests/fixtures/approvato\\.sh",
+      "sha256": "625f88e43b64baae03eff3c2a39e771eae5026455f53fed9b304ecc3d2d4b45f"
+    },
+    {
+      "path": "tests/fixtures/approvato_ma_vietato\\.sh",
+      "sha256": "d11ce1da22c7499b6508992f789c95c0f81421d9bff8e0cb2a5b139d75735bdc"
+    },
+    {
+      "path": "tests/fixtures/pericoloso\\.sh",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "tests/fixtures/senza_impronta\\.sh"
+    }
+  ]
 }

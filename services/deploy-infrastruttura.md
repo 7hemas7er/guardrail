@@ -66,3 +66,10 @@ comando diretto: un `rsync --delete` dentro `deploy.sh` vale quanto un
 `rsync --delete` scritto a mano. L'esito è una conferma, non un blocco, perché
 lo script lo ha scritto un umano e l'umano decide; fa eccezione un comando in
 `deny_commands`, che resta bloccato anche dentro uno script.
+
+Uno script che si lancia di continuo può essere approvato una volta sola, in
+`allow_scripts` di `.guardrail.json`, dichiarandone l'impronta sha256 (vedi
+README). L'approvazione è legata al contenuto: se lo script cambia, la conferma
+torna, con l'avviso che quello che sta per girare non è ciò che è stato letto.
+Approvare per nome, senza impronta, sarebbe esattamente l'incidente del
+2026-09-11 con una firma sopra.

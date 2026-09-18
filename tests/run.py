@@ -38,14 +38,15 @@ def run_case(case: dict) -> str:
         check=False,
     )
     if proc.returncode != 0:
-        return f"exit {proc.returncode}: {proc.stderr.strip()[:200]}"
+        return f"exit {proc.returncode}: {proc.stderr.strip()[:200]}", ""
     out = proc.stdout.strip()
     if not out:
-        return "allow"
+        return "allow", ""
     try:
-        return json.loads(out)["hookSpecificOutput"]["permissionDecision"]
+        esito = json.loads(out)["hookSpecificOutput"]
+        return esito["permissionDecision"], esito.get("permissionDecisionReason", "")
     except (ValueError, KeyError):
-        return f"output non valido: {out[:200]}"
+        return f"output non valido: {out[:200]}", ""
 
 
 def main() -> int:
@@ -59,12 +60,17 @@ def main() -> int:
                 continue
             case = json.loads(line)
             total += 1
-            got = run_case(case)
-            ok = got == case["expect"]
+            got, reason = run_case(case)
+            # `reason_contains`: per i casi in cui conta anche *cosa* dice il hook,
+            # non solo il verdetto (es. l'avviso che un allow_scripts non vale più).
+            atteso_nel_motivo = case.get("reason_contains", "")
+            ok = got == case["expect"] and atteso_nel_motivo in reason
             failures += 0 if ok else 1
             if verbose or not ok:
                 mark = "ok " if ok else "FAIL"
                 print(f"{mark}  atteso={case['expect']:<5} ottenuto={got:<5}  {case['name']}")
+                if not ok and atteso_nel_motivo and atteso_nel_motivo not in reason:
+                    print(f"      motivo atteso contenente {atteso_nel_motivo!r}, ottenuto: {reason[:160]!r}")
     print(f"\n{total - failures}/{total} casi verdi")
     return 1 if failures else 0
 
