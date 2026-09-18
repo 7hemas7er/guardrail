@@ -160,3 +160,10 @@
 {"name": "dropdb dentro un heredoc verso bash resta preso", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\ndropdb appdb\nEOF"}, "expect": "deny"}
 {"name": "redis-cli FLUSHALL eseguito resta preso", "tool_name": "Bash", "tool_input": {"command": "redis-cli -h 127.0.0.1 FLUSHALL"}, "expect": "deny"}
 {"name": "variabile d'ambiente davanti a psql non nasconde il comando", "tool_name": "Bash", "tool_input": {"command": "PGPASSWORD=x psql -h db-produzione.esempio.com -d appdb -c \"DELETE FROM utenti WHERE id = 1\""}, "expect": "deny"}
+{"name": "dump che rientra in produzione con -f", "tool_name": "Bash", "tool_input": {"command": "psql -h db-produzione.esempio.com -d appdb -f dump.sql"}, "expect": "deny"}
+{"name": "dump che rientra in produzione con redirezione", "tool_name": "Bash", "tool_input": {"command": "mysql -h db-produzione.esempio.com appdb < backup.sql"}, "expect": "deny"}
+{"name": "dump che rientra in produzione da una pipe", "tool_name": "Bash", "tool_input": {"command": "cat dump.sql | psql postgresql://u:p@db-produzione.esempio.com:5432/appdb"}, "expect": "deny"}
+{"name": "pg_restore verso produzione anche senza --clean", "tool_name": "Bash", "tool_input": {"command": "pg_restore -h db-produzione.esempio.com -d appdb dump.dump"}, "expect": "deny"}
+{"name": "clone produzione -> sandbox locale: ok", "tool_name": "Bash", "tool_input": {"command": "pg_dump -h db-produzione.esempio.com -U readonly appdb | psql -h 127.0.0.1 -p 55432 -d appdb_sandbox"}, "expect": "allow"}
+{"name": "restore locale da un file che nomina la produzione: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h 127.0.0.1 -d appdb_sandbox -f dump_produzione_anonimizzato.sql"}, "expect": "allow"}
+{"name": "lettura di produzione con -c resta permessa: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h db-produzione.esempio.com -d appdb -c \"SELECT count(*) FROM utenti\""}, "expect": "allow"}
