@@ -168,3 +168,11 @@
 {"name": "restore locale da un file che nomina la produzione: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h 127.0.0.1 -d appdb_sandbox -f dump_produzione_anonimizzato.sql"}, "expect": "allow"}
 {"name": "lettura di produzione con -c resta permessa: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h db-produzione.esempio.com -d appdb -c \"SELECT count(*) FROM utenti\""}, "expect": "allow"}
 {"name": "lo script di clone d'esempio non viene bloccato: ok", "tool_name": "Bash", "tool_input": {"command": "bash examples/clone-prod-to-local.sh --dry-run"}, "expect": "allow"}
+{"name": "config del repo: la fixture pericolosa non si esegue", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "deny"}
+{"name": "config del repo: la fixture innocua si esegue", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/innocuo.sh"}, "expect": "allow"}
+{"name": "config del repo: spegnere il hook e' una decisione umana", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "GUARDRAIL_DISABLE=1 python3 tests/run.py"}, "expect": "deny"}
+{"name": "config del repo: leggere GUARDRAIL_DISABLE resta permesso", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "printenv GUARDRAIL_DISABLE"}, "expect": "allow"}
+{"name": "config del repo: un push aggiorna i hook installati, quindi conferma", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "expect": "ask"}
+{"name": "config del repo: git status resta libero", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "git status --short"}, "expect": "allow"}
+{"name": "config del repo: scrittura MCP su Azure bloccata", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__containerapps", "tool_input": {"command": "update", "name": "app-qualsiasi"}, "expect": "deny"}
+{"name": "config del repo: lettura MCP su Azure permessa", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__group_list", "tool_input": {"subscription": "abc"}, "expect": "allow"}

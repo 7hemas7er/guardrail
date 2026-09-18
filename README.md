@@ -107,7 +107,10 @@ python3 tests/test_session_start.py   # regole iniettate e avvisi una tantum
 
 I casi sono in `tests/cases.jsonl`: uno per riga, con l'esito atteso. Una regola
 nuova arriva con il suo caso e con il motivo (l'incidente o il quasi-incidente)
-nel file di servizio corrispondente. Gli script in `tests/fixtures/` servono ai
+nel file di servizio corrispondente. Un caso può aggiungere
+`"config": ".guardrail.json"` per essere valutato con la configurazione di questo
+repo invece della fixture: è così che si verificano le proprie `deny_commands`,
+che altrimenti bloccherebbero il comando stesso che prova a verificarle. Gli script in `tests/fixtures/` servono ai
 casi che verificano la scansione degli script invocati: non vanno eseguiti.
 
 Per scrivere file che *citano* comandi pericolosi (documentazione, casi di test)

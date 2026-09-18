@@ -24,7 +24,10 @@ def run_case(case: dict) -> str:
         "cwd": case.get("cwd", str(ROOT)),
         "session_id": "test",
     }
-    env = dict(os.environ, GUARDRAIL_CONFIG=str(CONFIG), HOME=os.environ.get("HOME", "/home/master"))
+    # `config` per caso: serve ai casi che verificano la configurazione di questo
+    # repo (.guardrail.json) invece della fixture. Il valore è relativo alla root.
+    config = ROOT / case["config"] if case.get("config") else CONFIG
+    env = dict(os.environ, GUARDRAIL_CONFIG=str(config), HOME=os.environ.get("HOME", "/home/master"))
     env.pop("GUARDRAIL_DISABLE", None)
     proc = subprocess.run(
         [sys.executable, str(GUARD)],
