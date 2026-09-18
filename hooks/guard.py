@@ -539,19 +539,76 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
         ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
 
 
-SQL_CLI = re.compile(r"\b(psql|mysql|mariadb|sqlcmd|pg_restore|dropdb|createdb|mongosh|redis-cli)\b")
+SQL_CLI_NAMES = frozenset(
+    {"psql", "mysql", "mariadb", "sqlcmd", "pg_restore", "dropdb", "createdb", "mongosh", "redis-cli"}
+)
+# Token che stanno davanti al comando vero senza esserlo.
+COMMAND_WRAPPERS = frozenset({"sudo", "env", "command", "exec", "time", "nohup", "xargs", "then", "do", "else", "!"})
+# Separatori dopo i quali ricomincia un comando.
+SHELL_SEPARATORS = frozenset({";", "|", "||", "&", "&&", "(", ")", "{", "}", "&|"})
+ENV_ASSIGNMENT = re.compile(r"\w+=.*", re.S)
+
+
+def invoked_commands(text: str) -> frozenset[str]:
+    """I comandi che il testo *esegue*, non quelli che nomina.
+
+    `grep -n "dropdb" hooks/guard.py` non cancella nessun database, e nemmeno una
+    riga di codice che quella parola la contiene dentro una stringa: il nome sta
+    in posizione di argomento, non di comando. Cercarlo come testo è il falso
+    positivo del 2026-09-17, e blocca proprio chi sta diagnosticando il guard.
+
+    Un ritorno a capo vale come `;`, perché ogni riga ricomincia con un comando;
+    va sostituito prima, però, non riga per riga: una stringa che si estende su
+    più righe lascerebbe ogni riga con le virgolette scompagnate.
+
+    posix=True: `\\"` è un escape, come nella shell vera. Senza, una virgoletta
+    escapata dentro un argomento fa ripartire la lettura a metà stringa, e un
+    nome citato lì in mezzo sembra un comando.
+
+    Se le virgolette non tornano si ripiega sul comportamento testuale di prima
+    — tutte le parole — che sbaglia per eccesso di prudenza.
+    """
+    lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    names: set[str] = set()
+    at_start = True
+    skip_next = False
+    try:
+        for token in lexer:
+            if skip_next:  # il bersaglio di una redirezione non è un comando
+                skip_next = False
+                continue
+            if token and set(token) <= {"<", ">"}:
+                skip_next = True
+                continue
+            if token in SHELL_SEPARATORS:
+                at_start = True
+                continue
+            if not at_start:
+                continue
+            if ENV_ASSIGNMENT.fullmatch(token):  # PGPASSWORD=x psql ...
+                continue
+            if token in COMMAND_WRAPPERS or token.startswith("-"):
+                continue
+            names.add(os.path.basename(token))
+            at_start = False
+    except ValueError:
+        return frozenset(re.findall(r"[\w.-]+", text))
+    return frozenset(names)
 
 
 def check_sql_cli(text: str, config: dict) -> None:
-    if not SQL_CLI.search(text):
+    invoked = invoked_commands(text)
+    if not invoked & SQL_CLI_NAMES:
         return
     is_prod = matches_any(config["prod_patterns"], text) is not None
 
-    if re.search(r"\bdropdb\b", text):
+    if "dropdb" in invoked:
         deny("dropdb: cancella un database intero.") if is_prod else ask("dropdb su un DB non di produzione: conferma?")
-    if re.search(r"\bpg_restore\b[^;|]*(--clean|-c\b)", text) and is_prod:
+    if "pg_restore" in invoked and re.search(r"\bpg_restore\b[^;|]*(--clean|-c\b)", text) and is_prod:
         deny("pg_restore --clean verso produzione: droppa gli oggetti prima di ricrearli.")
-    if re.search(r"\bredis-cli\b[^;|]*\b(FLUSHALL|FLUSHDB)\b", text, re.I):
+    if "redis-cli" in invoked and re.search(r"\bredis-cli\b[^;|]*\b(FLUSHALL|FLUSHDB)\b", text, re.I):
         deny("FLUSHALL/FLUSHDB: svuota Redis, quindi cache, code e sessioni.")
 
     if WRITE_SQL.search(text):
