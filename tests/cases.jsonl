@@ -152,3 +152,11 @@
 {"name": "Read di ~/.kube/config", "tool_name": "Read", "tool_input": {"file_path": "~/.kube/config"}, "expect": "deny"}
 {"name": "Write su .guardrail.json", "tool_name": "Write", "tool_input": {"file_path": "/home/master/repos/progetto/.guardrail.json", "content": "{}"}, "expect": "ask"}
 {"name": "Write sulle settings di Claude Code", "tool_name": "Write", "tool_input": {"file_path": "~/.claude/settings.json", "content": "{}"}, "expect": "ask"}
+{"name": "nome di un comando SQL cercato con grep: ok", "tool_name": "Bash", "tool_input": {"command": "grep -rn \"dropdb\" hooks/guard.py"}, "expect": "allow"}
+{"name": "nome di un comando SQL citato in un messaggio: ok", "tool_name": "Bash", "tool_input": {"command": "echo \"mai lanciare redis-cli FLUSHALL in produzione\""}, "expect": "allow"}
+{"name": "nome di un comando SQL dentro una stringa di codice: ok", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nsrc = src.replace('dropdb appdb', 'x')\nPY"}, "expect": "allow"}
+{"name": "dropdb in posizione di comando resta preso", "tool_name": "Bash", "tool_input": {"command": "dropdb appdb"}, "expect": "deny"}
+{"name": "dropdb dopo una pipe resta preso", "tool_name": "Bash", "tool_input": {"command": "echo si | dropdb scratch_db"}, "expect": "ask"}
+{"name": "dropdb dentro un heredoc verso bash resta preso", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\ndropdb appdb\nEOF"}, "expect": "deny"}
+{"name": "redis-cli FLUSHALL eseguito resta preso", "tool_name": "Bash", "tool_input": {"command": "redis-cli -h 127.0.0.1 FLUSHALL"}, "expect": "deny"}
+{"name": "variabile d'ambiente davanti a psql non nasconde il comando", "tool_name": "Bash", "tool_input": {"command": "PGPASSWORD=x psql -h db-produzione.esempio.com -d appdb -c \"DELETE FROM utenti WHERE id = 1\""}, "expect": "deny"}
