@@ -29,8 +29,10 @@ Cosa ottieni:
   `guard.py`: esito `allow`, `ask` (conferma anche in modalità auto) o `deny`
   (blocco con spiegazione all'agente);
 - la skill `guardrail`, che carica le regole del servizio interessato;
-- tre comandi: `/guardrail:check` (il hook è davvero attivo?), `/guardrail:setup`
-  (configura il repo corrente), `/guardrail:log` (cosa è stato bloccato, e perché).
+- quattro comandi: `/guardrail:check` (il hook è davvero attivo?),
+  `/guardrail:setup` (configura il repo corrente), `/guardrail:log` (cosa è stato
+  bloccato, e perché), `/guardrail:approve` (approva uno script e ne registra
+  l'impronta).
 
 Subito dopo l'installazione, in una sessione nuova:
 
@@ -96,8 +98,12 @@ leggere. `allow_scripts` la toglie, ma lega l'esenzione al **contenuto**:
 ```
 
 ```
-sha256sum scripts/build.sh      # l'impronta da incollare, dopo averlo letto
+/guardrail:approve scripts/build.sh    # legge, mostra, registra l'impronta
+sha256sum scripts/build.sh             # se preferisci farlo a mano
 ```
+
+Senza argomenti, `/guardrail:approve` controlla le approvazioni esistenti e dice
+quali impronte sono scadute, incomplete o orfane.
 
 Se lo script cambia, l'impronta non corrisponde più: torna la conferma, con un
 avviso che dice che il contenuto non è quello approvato. Una voce senza `sha256`
@@ -167,6 +173,7 @@ skills/guardrail/         skill che carica il file di servizio giusto
 commands/check.md         /guardrail:check — il hook è attivo?
 commands/setup.md         /guardrail:setup — configura il repo corrente
 commands/log.md           /guardrail:log — riassume i blocchi recenti
+commands/approve.md       /guardrail:approve — approva uno script, registra l'impronta
 examples/                 .guardrail.json d'esempio, settings consigliati,
                           clone-prod-to-local.sh di riferimento
 tests/                    casi, runner, fixture di script, test di session-start
