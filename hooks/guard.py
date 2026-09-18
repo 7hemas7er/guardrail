@@ -598,11 +598,114 @@ def invoked_commands(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
+# Il bersaglio di una connessione, e solo quello. Serve a distinguere
+# `pg_dump -h prod | psql -h localhost` (un clone verso una sandbox: legittimo,
+# vedi database.md) da `psql -h prod -f dump.sql` (un dump che rientra in
+# produzione): cercando "prod" nell'intero comando i due sono identici.
+CONN_FLAGS = frozenset({"-h", "--host", "-d", "--dbname", "--database", "-U", "--username", "--service"})
+# Flag che portano un valore qualunque: quel valore non è un bersaglio.
+OTHER_VALUE_FLAGS = frozenset(
+    {"-c", "--command", "-f", "--file", "-o", "--output", "-p", "--port", "-P", "-v", "--set",
+     "--variable", "-e", "--execute", "-L", "--log-file", "-j", "-T", "-F", "-n"}
+)
+CONN_ENV = re.compile(
+    r"(?:PG(?:HOST|HOSTADDR|DATABASE|SERVICE)|MYSQL_(?:HOST|DATABASE)|DATABASE_URL|DB_(?:HOST|NAME|DATABASE))"
+    r"=(?P<value>.*)",
+    re.I | re.S,
+)
+CONN_URI = re.compile(r"(?:postgres(?:ql)?|mysql|mariadb)://", re.I)
+LOOKS_LIKE_FILE = re.compile(r"[/\\]|\.\w+$")
+# Comandi che possono comparire nella stessa catena senza essere un bersaglio.
+DUMP_COMMANDS = frozenset({"pg_dump", "pg_dumpall", "mysqldump", "cat", "zcat", "gunzip", "gzip", "sudo", "env"})
+
+
+def connection_targets(segment: str) -> str:
+    """Le parti di un comando che dicono *a quale database* punta: host, nome del
+    database, URI di connessione, variabili d'ambiente.
+
+    I nomi di file restano fuori di proposito: un dump si chiama spesso
+    `dump_produzione.sql`, e il nome di un file non è un bersaglio.
+    """
+    targets: list[str] = []
+    pending_conn = False
+    skip_value = False
+    for token in shell_tokens(segment):
+        if pending_conn:
+            targets.append(token)
+            pending_conn = False
+            continue
+        if skip_value:
+            skip_value = False
+            continue
+        flag, separator, inline = token.partition("=")
+        if flag in CONN_FLAGS:
+            if separator:
+                targets.append(inline)
+            else:
+                pending_conn = True
+        elif flag in OTHER_VALUE_FLAGS:
+            skip_value = not separator
+        elif (match := CONN_ENV.fullmatch(token)):
+            targets.append(match.group("value"))
+        elif CONN_URI.match(token):
+            targets.append(token)
+        elif token.startswith("-"):
+            continue
+        elif not LOOKS_LIKE_FILE.search(token) and os.path.basename(token) not in SQL_CLI_NAMES | DUMP_COMMANDS:
+            targets.append(token)  # il nome del database, posizionale
+    return " ".join(targets)
+
+
+RESTORE_CLI = re.compile(r"\b(?:psql|mysql|mariadb)\b")
+# Un file o una pipe in ingresso: il SQL lo porta il file, non il comando.
+FILE_INPUT = re.compile(r"(?:^|\s)(?:-f|--file)[=\s]|(?<!<)<(?![<(])")
+PG_RESTORE_TARGET = re.compile(r"(?:^|\s)(?:-d|--dbname)[=\s]")
+
+
+def pipeline_segments(text: str) -> list[tuple[str, bool]]:
+    """Ogni comando della riga, e se riceve stdin da una pipe."""
+    parts = re.split(r"(\|\||&&|[;\n|])", text)
+    segments: list[tuple[str, bool]] = []
+    from_pipe = False
+    for index in range(0, len(parts), 2):
+        if parts[index].strip():
+            segments.append((parts[index], from_pipe))
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+        from_pipe = separator == "|"
+    return segments
+
+
+def check_restore_into_prod(text: str, config: dict) -> None:
+    """Un dump che rientra in produzione non contiene verbi SQL: li porta il file.
+
+    È la direzione inversa del clone produzione → sandbox locale, ed è l'unico
+    modo in cui quel clone può fare danno: `psql -h prod -f dump.sql` riscrive il
+    database senza che una sola parola di SQL compaia nel comando.
+    """
+    for segment, from_pipe in pipeline_segments(text):
+        if RESTORE_CLI.search(segment):
+            fed = from_pipe or FILE_INPUT.search(segment) is not None
+        elif re.search(r"\bpg_restore\b", segment):
+            fed = PG_RESTORE_TARGET.search(segment) is not None
+        else:
+            continue
+        if not fed:
+            continue
+        if (pattern := matches_any(config["prod_patterns"], connection_targets(segment))):
+            deny(
+                "un dump che rientra in PRODUZIONE: il file (o la pipe) in ingresso esegue SQL che nel "
+                f"comando non si vede, e il bersaglio è di produzione (regola {pattern!r}). Il clone va in "
+                "una direzione sola, produzione → locale. (guardrail: database.md)"
+            )
+
+
 def check_sql_cli(text: str, config: dict) -> None:
     invoked = invoked_commands(text)
     if not invoked & SQL_CLI_NAMES:
         return
     is_prod = matches_any(config["prod_patterns"], text) is not None
+
+    check_restore_into_prod(text, config)
 
     if "dropdb" in invoked:
         deny("dropdb: cancella un database intero.") if is_prod else ask("dropdb su un DB non di produzione: conferma?")

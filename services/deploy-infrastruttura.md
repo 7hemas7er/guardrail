@@ -33,6 +33,13 @@ Docker locale.
   N volte ogni task schedulato. Verifica prima di scalare.
 - **Container e volumi locali**: `docker system prune`, `volume rm`, `compose
   down -v` cancellano database locali. Elenca cosa sparisce, poi conferma.
+- **La sandbox di prova si dichiara, non si improvvisa.** Un ambiente stabile per
+  i test (app più database in container) ha un compose dedicato, con nome
+  progetto, volumi e porte propri: niente container riusati da un altro
+  progetto, niente porta di default occupata a caso, nessun volume della home. I
+  dati arrivano da un clone anonimizzato di produzione, alle condizioni in
+  [`database.md`](database.md); produzione resta sorgente e non diventa mai
+  bersaglio.
 - **Simulare un deploy in locale** non significa usare la home come bersaglio:
   finto server e finta home vivono nello scratchpad, con path letterali, e la
   pulizia finale cancella solo quello che si è creato, per nome.

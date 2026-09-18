@@ -30,14 +30,44 @@ chiami semplicemente `postgres`, senza "prod". Ogni repo dichiara i suoi.
   solo al setup iniziale: in produzione cancellano le assegnazioni manuali.
 - `DELETE` e `UPDATE` hanno sempre un `WHERE` stretto e prima si conta con un
   `SELECT COUNT(*)` con lo stesso predicato. Mostra il conteggio all'utente.
-- Dump e restore: `pg_dump` di produzione va solo verso un DB locale anonimizzato;
-  mai `pg_restore --clean` verso produzione.
+- Dump e restore: `pg_dump` di produzione va solo verso un DB locale anonimizzato
+  (vedi «Ambiente di prova clonato da produzione»); mai `pg_restore --clean`
+  verso produzione.
 - Connection string con password non si scrivono in file tracciati, né in chat.
   Se un `.mcp.json` tracciato contiene credenziali, segnalalo: è un bug.
 - Timestamp: confronta sempre nello stesso fuso. Un `timestamp` senza timezone
   riletto come ora locale ha già prodotto tre volte lo stesso bug.
 - Identificatori SQL dinamici (nomi colonna, chiavi JSONB in `orderBy`) non sono
   bindabili: whitelist esplicita, sempre.
+
+## Ambiente di prova clonato da produzione
+
+Provare sul serio richiede dati veri per forma e volume. Un clone di produzione
+dentro un container locale **è consentito**, ed è preferibile all'alternativa che
+di solito prende il suo posto: provare in produzione. Le regole della tabella qui
+sopra non si allentano di un millimetro mentre il clone gira — il consenso vale
+per l'ambiente, non per la produzione.
+
+Vale a queste condizioni, tutte necessarie.
+
+- **Una direzione sola.** Produzione è solo sorgente: `pg_dump`/`mysqldump` con
+  l'utente read-only. Nessun comando della catena ha produzione come bersaglio.
+  È l'unico modo in cui un clone fa danno, ed è quello che il hook blocca.
+- **Bersaglio usa e getta e dichiarato**: un container con nome progetto, volume
+  e porta propri (`docker compose -p appdb-sandbox`). Mai il DB di test
+  condiviso, mai la home montata dentro il container.
+- **Anonimizzazione in transito**, non "poi la faccio": il dump grezzo di una
+  tabella di persone non deve restare a riposo su disco. Lo fa lo script, fra
+  dump e restore. Vale la regola 7 di `RULES-CORE.md` anche in locale.
+- **Il dump vive nello scratchpad**, mai in un path tracciato da git, e a fine
+  lavoro si cancella per nome letterale.
+- **Il clone è uno script del repo, scritto da un umano**
+  (`scripts/clone-prod-to-local.sh`): l'agente lo invoca, non lo improvvisa. Lo
+  script legge le credenziali dall'ambiente e fallisce se mancano; l'agente non
+  le vede e non le stampa.
+- **Dichiaralo in `ask_commands`** dentro `.guardrail.json`: ogni clone chiede
+  conferma, anche in modalità auto, senza che nessuno debba toccare le regole
+  sul database di produzione.
 
 ## Cosa fa rispettare il hook
 
@@ -48,6 +78,9 @@ chiami semplicemente `postgres`, senza "prod". Ogni repo dichiara i suoi.
 | `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE`, su qualunque ambiente | BLOCCO |
 | `DELETE FROM` o `UPDATE … SET` senza `WHERE` | BLOCCO |
 | `dropdb`, `pg_restore --clean` verso produzione | BLOCCO |
+| `psql`/`mysql` con `-f`, `<` o una pipe in ingresso, e un bersaglio di produzione | BLOCCO |
+| `pg_restore -d` verso un bersaglio di produzione, anche senza `--clean` | BLOCCO |
+| `pg_dump` di produzione verso un bersaglio locale (il clone) | permesso |
 | `redis-cli FLUSHALL` / `FLUSHDB` | BLOCCO |
 | `artisan migrate:fresh`, `db:wipe`, `migrate:reset` | BLOCCO |
 | `artisan migrate:rollback`, `db:seed --class=RolePermissionSeeder` | CONFERMA |
@@ -55,6 +88,11 @@ chiami semplicemente `postgres`, senza "prod". Ogni repo dichiara i suoi.
 | Stessa operazione su qualunque altro server | CONFERMA |
 | Tool MCP non SQL con operazione di modifica (`create`, `update`, `restart`, `scale`…) su produzione | BLOCCO |
 | Stessa operazione su un server in `ask_mcp_servers` | CONFERMA |
+
+Per le ultime tre righe il bersaglio non è "la parola produzione da qualche parte
+nel comando", ma host, nome del database, URI di connessione e variabili
+d'ambiente di connessione. Un file di nome `dump_produzione.sql` ripristinato in
+locale non è un bersaglio di produzione, e non viene bloccato.
 
 Per i server MCP non SQL (Azure, GitHub, filesystem…) l'intenzione si legge dal
 nome del tool e dai campi che descrivono l'operazione (`command`, `action`,

@@ -1,5 +1,5 @@
 {
-  "_commento": "Esempio di configurazione. Copiare come .guardrail.json nella root del repo e sostituire host, nomi di database, server MCP e script con quelli veri. Nota: qui il server MCP di produzione si chiama 'postgres', senza 'prod' nel nome, e per questo va dichiarato esplicitamente.",
+  "_commento": "Esempio di configurazione. Copiare come .guardrail.json nella root del repo e sostituire host, nomi di database, server MCP e script con quelli veri. Nota: qui il server MCP di produzione si chiama 'postgres', senza 'prod' nel nome, e per questo va dichiarato esplicitamente. Lo script di clone verso la sandbox locale sta in ask_commands: legge la produzione, scrive in locale, e ogni esecuzione chiede conferma (vedi services/database.md).",
   "prod_mcp_servers": ["postgres", "telemetria"],
   "ask_mcp_servers": ["postgres-test"],
   "prod_patterns": [
@@ -15,6 +15,7 @@
     "REFRESH_DB_ALLOWED=appdb\\b"
   ],
   "ask_commands": [
+    "scripts/clone-prod-to-local\\.sh",
     "scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh",
     "build-and-push(-fast)?\\.sh[^;|]*--skip-tests",
     "az containerapp (update|revision|delete)",
