@@ -115,6 +115,15 @@ usa gli strumenti di modifica file dell'agente: un heredoc che alimenta un
 interprete (`bash <<EOF`) viene letto come comandi, uno che scrive su file
 (`cat > x <<EOF`) come dati.
 
+**Il hook che ti blocca mentre sviluppi è quello installato, non quello che stai
+scrivendo.** Claude Code esegue la copia in
+`~/.claude/plugins/cache/<marketplace>/guardrail/<versione>/hooks/guard.py`: una
+correzione nel repo non ha effetto finché non aggiorni il plugin, e il codice del
+plugin non si modifica a mano. Quindi si lavora sotto la versione precedente —
+comodo per accorgersi dei falsi positivi, scomodo quando è proprio quello che
+stai correggendo a bloccarti. In quel caso: usa `Edit`/`Write` sul repo, e
+verifica con `python3 tests/run.py`, che gira sul `guard.py` locale.
+
 ## Struttura
 
 ```
@@ -129,7 +138,8 @@ skills/guardrail/         skill che carica il file di servizio giusto
 commands/check.md         /guardrail:check — il hook è attivo?
 commands/setup.md         /guardrail:setup — configura il repo corrente
 commands/log.md           /guardrail:log — riassume i blocchi recenti
-examples/                 .guardrail.json d'esempio, settings consigliati
+examples/                 .guardrail.json d'esempio, settings consigliati,
+                          clone-prod-to-local.sh di riferimento
 tests/                    casi, runner, fixture di script, test di session-start
 .claude-plugin/           manifest del plugin e del marketplace
 ```
