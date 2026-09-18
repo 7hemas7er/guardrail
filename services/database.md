@@ -67,8 +67,10 @@ Vale a queste condizioni, tutte necessarie.
   le vede e non le stampa. Uno di riferimento, da copiare e adattare, è in
   [`examples/clone-prod-to-local.sh`](../examples/clone-prod-to-local.sh).
 - **Dichiaralo in `ask_commands`** dentro `.guardrail.json`: ogni clone chiede
-  conferma, anche in modalità auto, senza che nessuno debba toccare le regole
-  sul database di produzione.
+  conferma, senza che nessuno debba toccare le regole sul database di produzione.
+  ⚠️ In modalità auto quella conferma la concede l'agente: se il clone deve
+  passare per forza da un umano, la voce va in `deny_commands` e lo lancia una
+  persona fuori dalla sessione.
 
 ## Cosa fa rispettare il hook
 
