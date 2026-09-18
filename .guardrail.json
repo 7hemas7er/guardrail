@@ -1,0 +1,25 @@
+{
+  "_commento": "Configurazione di guardrail per il repo di guardrail stesso. Qui non esistono database, deploy o ambienti: i rischi sono altri tre, e sono scritti sotto. Le liste si sommano ai default del hook, che marcano gia come produzione i comandi che contengono 'prod', 'produzione' o 'live'.",
+
+  "_prod_mcp_servers": "Lavorando su questo repo non c'e' motivo di modificare infrastruttura vera. Azure resta leggibile (get_*, list_*), ma ogni scrittura viene bloccata invece di chiedere conferma: in modalita auto una conferma viene concessa da sola.",
+  "prod_mcp_servers": ["Azure-MCP-Server"],
+
+  "ask_mcp_servers": [],
+
+  "_prod_patterns": "Vuoto di proposito: questo repo non ha ambienti. I default del hook bastano, e aggiungere qui gli host d'esempio della documentazione (db-produzione.esempio.com, appdb) renderebbe sospetto ogni comando che tocca services/ o tests/.",
+  "prod_patterns": [],
+
+  "_deny_commands": "1) pericoloso.sh e una fixture: esiste per essere LETTA dal hook quando qualcuno la invoca, e contiene un rsync --delete verso un host remoto. Invocarla oggi e solo una conferma, e in modalita auto la conferma la da l'agente. 2) GUARDRAIL_DISABLE= spegne il hook: e una decisione umana, presa fuori dalla sessione. Leggerla (printenv GUARDRAIL_DISABLE) resta permesso, serve a /guardrail:check.",
+  "deny_commands": [
+    "tests/fixtures/pericoloso\\.sh",
+    "GUARDRAIL_DISABLE\\s*="
+  ],
+
+  "_ask_commands": "Il marketplace installa il plugin da GitHub, ramo main: un push qui aggiorna il codice dei hook che girera' sulle macchine di chi ha guardrail installato. Non e' un commit qualunque, ed e' giusto fermarsi un attimo.",
+  "ask_commands": [
+    "\\bgit\\s+push\\b"
+  ],
+
+  "_allow_commands": "Vuoto, e che resti vuoto: e' l'eccezione che disattiva le regole. Se un giorno ne serve una, va motivata nel commit che la introduce.",
+  "allow_commands": []
+}
