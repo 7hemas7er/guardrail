@@ -64,7 +64,8 @@ Vale a queste condizioni, tutte necessarie.
 - **Il clone è uno script del repo, scritto da un umano**
   (`scripts/clone-prod-to-local.sh`): l'agente lo invoca, non lo improvvisa. Lo
   script legge le credenziali dall'ambiente e fallisce se mancano; l'agente non
-  le vede e non le stampa.
+  le vede e non le stampa. Uno di riferimento, da copiare e adattare, è in
+  [`examples/clone-prod-to-local.sh`](../examples/clone-prod-to-local.sh).
 - **Dichiaralo in `ask_commands`** dentro `.guardrail.json`: ogni clone chiede
   conferma, anche in modalità auto, senza che nessuno debba toccare le regole
   sul database di produzione.

@@ -167,3 +167,4 @@
 {"name": "clone produzione -> sandbox locale: ok", "tool_name": "Bash", "tool_input": {"command": "pg_dump -h db-produzione.esempio.com -U readonly appdb | psql -h 127.0.0.1 -p 55432 -d appdb_sandbox"}, "expect": "allow"}
 {"name": "restore locale da un file che nomina la produzione: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h 127.0.0.1 -d appdb_sandbox -f dump_produzione_anonimizzato.sql"}, "expect": "allow"}
 {"name": "lettura di produzione con -c resta permessa: ok", "tool_name": "Bash", "tool_input": {"command": "psql -h db-produzione.esempio.com -d appdb -c \"SELECT count(*) FROM utenti\""}, "expect": "allow"}
+{"name": "lo script di clone d'esempio non viene bloccato: ok", "tool_name": "Bash", "tool_input": {"command": "bash examples/clone-prod-to-local.sh --dry-run"}, "expect": "allow"}
