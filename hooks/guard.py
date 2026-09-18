@@ -5,7 +5,8 @@ Legge da stdin il JSON che Claude Code passa ai hook:
     {"tool_name": "...", "tool_input": {...}, "cwd": "...", "session_id": "..."}
 e risponde su stdout con una decisione:
     allow  -> nessun output (il tool procede)
-    ask    -> chiede conferma all'utente, anche in modalità auto
+    ask    -> chiede conferma. ⚠️ NON garantisce un umano: in modalità auto la
+              concede l'agente. Solo `deny` non è scavalcabile.
     deny   -> blocca il tool e spiega a Claude il motivo
 
 Quattro famiglie di regole, tutte nella funzione `decide`:
@@ -411,6 +412,30 @@ HEREDOC = re.compile(
     re.M | re.S,
 )
 
+# Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
+# Il corpo sono comandi — per quell'interprete, non per la shell — e resta
+# analizzato da tutte le regole built-in: un `os.system("rm -rf ...")` dentro un
+# heredoc Python va visto, ed è la ragione per cui la riga 395 dice che questi
+# heredoc non si toccano.
+#
+# Le regex di PROGETTO sono un caso diverso, e solo loro usano questo taglio.
+# Sono stringhe arbitrarie (un path, un flag) scritte per intercettare un comando
+# della shell: incontrate dentro un letterale Python descrivono, non eseguono.
+# Il 2026-09-18 `ask_commands: ["scripts/clone-prod-to-dev\\.sh"]` ha fatto
+# scattare la conferma su uno script che quel path lo stampava soltanto, e la
+# gemella in `deny_commands` ha bloccato lo script che stava diagnosticando il
+# guard — lo stesso falso positivo del 2026-09-17, spostato dalle regole built-in
+# a quelle di progetto.
+#
+# `bash`/`sh`/`zsh` restano fuori: lì il corpo è shell per davvero, e le regex di
+# progetto devono vederlo.
+HEREDOC_INTERPRETER = re.compile(
+    r"(?P<head>^[^\n]*?\b(?:python[\d.]*|node|ruby|perl|php|Rscript)\b"
+    r"[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
+    re.M | re.S,
+)
+
 SCRIPT_BY_INTERPRETER = re.compile(
     r"(?:^|[;&|(]\s*)(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+(?:-[\w=-]+\s+)*(?P<path>[^\s;&|()-][^\s;&|()]*)"
 )
@@ -420,6 +445,18 @@ SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]
 
 def strip_data_heredocs(text: str) -> str:
     return HEREDOC.sub(lambda m: m.group("head") + m.group("end"), text)
+
+
+def strip_interpreter_heredocs(text: str) -> str:
+    """Il testo su cui si applicano le REGEX DI PROGETTO, e solo quelle.
+
+    Toglie il corpo degli heredoc diretti a un interprete non-shell. La riga di
+    testa resta: `python3 - <<PY` continua a essere un comando, e se la testa
+    contiene il pattern cercato la regola scatta come prima.
+
+    Non usarlo per le regole built-in: quelle devono continuare a vedere tutto.
+    """
+    return HEREDOC_INTERPRETER.sub(lambda m: m.group("head") + m.group("end"), text)
 
 
 def invoked_scripts(text: str, cwd: str) -> list[Path]:
@@ -513,11 +550,15 @@ def check_scripts(text: str, config: dict, cwd: str) -> None:
 
 def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+    # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
+    # un interprete: là dentro un path è citato, non eseguito. Le regole built-in
+    # continuano a usare `text`, che quei corpi li contiene ancora.
+    testo_progetto = strip_interpreter_heredocs(text)
 
-    if depth == 0 and matches_any(config["allow_commands"], text):
+    if depth == 0 and matches_any(config["allow_commands"], testo_progetto):
         return
 
-    if (pattern := matches_any(config["deny_commands"], text)):
+    if (pattern := matches_any(config["deny_commands"], testo_progetto)):
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
     check_rm(text)
@@ -591,7 +632,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     if re.search(r"(?:^|[;&|(]\s*)sudo\b", text):
         ask("sudo: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
 
-    if (pattern := matches_any(config["ask_commands"], text)):
+    if (pattern := matches_any(config["ask_commands"], testo_progetto)):
         ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
 
 

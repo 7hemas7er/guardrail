@@ -181,3 +181,9 @@
 {"name": "allow_scripts: una voce senza impronta non esenta", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/senza_impronta.sh"}, "expect": "ask", "reason_contains": "non dichiara sha256"}
 {"name": "allow_scripts non batte deny_commands", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/approvato_ma_vietato.sh"}, "expect": "deny"}
 {"name": "allow_scripts vale per il contenuto, non per il comando che lo lancia", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"$X\" && bash tests/fixtures/approvato.sh"}, "expect": "deny"}
+{"name": "heredoc verso un interprete: il path di deny_commands e' citato, non eseguito", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nprint('scripts/deploy/promote-to-production.sh')\nPY"}, "expect": "allow"}
+{"name": "heredoc verso un interprete: il path di ask_commands e' citato, non eseguito", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nprint('scripts/deploy/containerapp/promote-to-production.sh')\nPY"}, "expect": "allow"}
+{"name": "heredoc verso node: stessa regola", "tool_name": "Bash", "tool_input": {"command": "node <<'JS'\nconsole.log('scripts/deploy/promote-to-production.sh')\nJS"}, "expect": "allow"}
+{"name": "heredoc di shell: il corpo resta shell e le regex di progetto lo vedono", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\nscripts/deploy/promote-to-production.sh\nEOF"}, "expect": "deny"}
+{"name": "la testa dell'heredoc resta analizzata anche verso un interprete", "tool_name": "Bash", "tool_input": {"command": "scripts/deploy/promote-to-production.sh && python3 - <<'PY'\nprint('ok')\nPY"}, "expect": "deny"}
+{"name": "esecuzione vera del path: non e' una citazione", "tool_name": "Bash", "tool_input": {"command": "./scripts/deploy/promote-to-production.sh"}, "expect": "deny"}
