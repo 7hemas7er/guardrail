@@ -40,7 +40,9 @@ Leggi il file del servizio che stai per toccare, **prima** di agire.
 
 Ogni file di servizio distingue le **regole di condotta** (prosa) da ciò che il
 hook `hooks/guard.py` fa rispettare: `BLOCCO` (il tool non parte) o `CONFERMA`
-(l'utente deve approvare, anche in modalità auto). Il blocco non è un ostacolo
+(qualcuno deve approvare). ⚠️ In modalità auto la `CONFERMA` la concede l'agente,
+non l'utente: se una decisione deve essere di un umano, la regola va scritta come
+`BLOCCO`, che è l'unico esito non scavalcabile. Il blocco non è un ostacolo
 da aggirare: se scatta, ferma il lavoro e spiega all'utente.
 
 ## Configurazione per progetto

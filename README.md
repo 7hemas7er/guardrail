@@ -26,8 +26,9 @@ Cosa ottieni:
 
 - a ogni sessione, le regole essenziali (`RULES-CORE.md`) entrano nel contesto;
 - ogni comando Bash, lettura e scrittura di file e query MCP passa dal hook
-  `guard.py`: esito `allow`, `ask` (conferma anche in modalità auto) o `deny`
-  (blocco con spiegazione all'agente);
+  `guard.py`: esito `allow`, `ask` (conferma — ma in modalità auto la concede
+  l'agente, non l'utente) o `deny` (blocco con spiegazione all'agente, e l'unico
+  esito che la modalità auto non può scavalcare);
 - la skill `guardrail`, che carica le regole del servizio interessato;
 - quattro comandi: `/guardrail:check` (il hook è davvero attivo?),
   `/guardrail:setup` (configura il repo corrente), `/guardrail:log` (cosa è stato
