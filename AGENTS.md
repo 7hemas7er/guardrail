@@ -14,7 +14,8 @@ avrebbero fermato: per questo il repo distribuisce anche hook che bloccano.
   conferma; la skill `guardrail` carica le regole del servizio interessato;
   `/guardrail:check` verifica che il hook sia attivo, `/guardrail:setup`
   configura il `.guardrail.json` del repo corrente, `/guardrail:log` riassume
-  cosa è stato bloccato.
+  cosa è stato bloccato, `/guardrail:approve` approva uno script che si lancia di
+  continuo e ne registra l'impronta.
 - **Altri strumenti**: clona il repo accanto ai progetti e importa `AGENTS.md`
   nel file di istruzioni del tuo strumento. Nessun blocco automatico: valgono
   solo le regole scritte.

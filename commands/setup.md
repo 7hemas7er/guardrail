@@ -61,6 +61,31 @@ cambi senza che l'utente lo veda.
 **Non proporre mai `allow_commands`.** È l'eccezione che disattiva le regole: la
 aggiunge un umano, motivandola nel messaggio di commit.
 
+**Non scrivere mai `allow_scripts` in questo comando**, nemmeno se sai già quale
+script il progetto lancia di continuo: quella voce dichiara «ho letto questo
+contenuto», e in questa fase nessuno lo ha letto. Vedi il passo 3-bis.
+
+## 3-bis. Segnala gli script da approvare, non approvarli
+
+Ogni script invocato viene letto dal hook, e se contiene un comando bloccabile
+produce una conferma a ogni esecuzione. Individua i candidati — gli script che il
+progetto lancia spesso e che contengono comandi del genere:
+
+- gli `scripts` di `package.json`, i target del `Makefile`, i job della CI;
+- quello che il README dice di lanciare per build, test, deploy locale;
+- `scripts/*.sh` invocati da altri script.
+
+Per ognuno, una riga: path, cosa fa in una frase, e quale comando produrrebbe la
+conferma (con il numero di riga). Poi ferma qui l'elenco e indica la strada:
+
+```
+/guardrail:approve scripts/build.sh
+```
+
+È quel comando che legge lo script, lo mostra all'utente e ne registra
+l'impronta. Un'esenzione scritta senza aver letto vale meno di niente: toglie la
+conferma e non aggiunge la revisione.
+
 ## 4. Verifica le impostazioni di Claude Code
 
 Leggi `~/.claude/settings.json` e controlla che ci sia:
