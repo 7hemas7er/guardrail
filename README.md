@@ -80,6 +80,32 @@ Metti `.guardrail.json` nella root del repo. Esempio completo in
 | `deny_commands` | regex sul comando Bash: blocco secco |
 | `ask_commands` | regex sul comando Bash: conferma |
 | `allow_commands` | regex che esentano un comando da tutte le regole (usare con parsimonia, motivare nel commit) |
+| `allow_scripts` | script già letti e approvati: `{"path": regex, "sha256": impronta}`. Esentano **solo** la scansione del contenuto, e solo finché il contenuto resta quello |
+
+### Script già letti: `allow_scripts`
+
+Ogni script invocato viene letto dal hook, e se contiene un comando che sarebbe
+bloccato l'esito è una conferma. Su uno script di build lanciato venti volte al
+giorno quella conferma diventa rumore, e il rumore insegna ad approvare senza
+leggere. `allow_scripts` la toglie, ma lega l'esenzione al **contenuto**:
+
+```json
+"allow_scripts": [
+  {"path": "scripts/build\\.sh", "sha256": "625f88e4…"}
+]
+```
+
+```
+sha256sum scripts/build.sh      # l'impronta da incollare, dopo averlo letto
+```
+
+Se lo script cambia, l'impronta non corrisponde più: torna la conferma, con un
+avviso che dice che il contenuto non è quello approvato. Una voce senza `sha256`
+non esenta niente — «mi fido di questo file per sempre» non è una cosa che questo
+repo sa dire. `deny_commands` vince comunque: un comando vietato resta vietato
+anche dentro uno script approvato, e l'esenzione vale solo per la scansione del
+contenuto, non per il comando che lo lancia (`rm -rf "$X" && bash build.sh`
+resta bloccato).
 
 Le liste si sommano con `~/.guardrail.json`, se esiste. `GUARDRAIL_CONFIG=<file>`
 sostituisce entrambi (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
