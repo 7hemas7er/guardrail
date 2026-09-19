@@ -66,6 +66,24 @@ il comando: non risolve le variabili.
 | Scrittura, da tool o da shell, su `.guardrail.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands|skills|agents|rules` | CONFERMA |
 | Scrittura, da tool o da shell, in `~/.claude/plugins` o `~/.claude/hooks` (il codice di guardrail stesso) | BLOCCO |
 | Scrittura (Write/Edit) fuori dal progetto corrente, dallo scratchpad e dalla memoria di Claude Code | CONFERMA |
+| Codice passato a una shell come stringa (`bash -c "…"`, `sh -c '…'`, `eval …`, `ssh host "…"`): analizzato con le stesse regole, stesso esito | come il comando che contiene |
+
+Su quest'ultima riga: il primo token di una stringa passata a una shell è
+posizione di comando, quindi `bash -c "rm -rf $HOME"` vale esattamente
+`rm -rf "$HOME"`, annidamenti compresi. La stringa l'ha scritta l'agente in quel
+momento, non un umano in un file del repo: per questo il `BLOCCO` resta blocco e
+non viene declassato a conferma, come invece accade per uno script invocato.
+Citare non è eseguire: in `grep "bash -c 'rm -rf'"` il comando è `grep`, e non
+succede niente.
+
+**Limite dichiarato**: un interprete che *non* è una shell resta fuori.
+`python3 -c "import os; os.system('rm -rf ~')"` e lo stesso codice dentro un
+heredoc Python non vengono analizzati — indovinare il senso di un linguaggio
+arbitrario sarebbe peggio che dichiarare il buco. Un progetto può stringere con
+una regola sua in `deny_commands` (es. `os\.system`), ma sappia che vale per
+`python3 -c "…"` e **non** dentro un heredoc: là il corpo è escluso dalle regex
+di progetto di proposito, perché un path citato in uno script non è un path
+eseguito.
 
 Le letture di segreti sono presidiate sia sul tool `Read` sia sulla shell: le
 `permissions.deny` delle impostazioni valgono solo per `Read`, e un `cat .env`

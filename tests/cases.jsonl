@@ -187,3 +187,18 @@
 {"name": "heredoc di shell: il corpo resta shell e le regex di progetto lo vedono", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\nscripts/deploy/promote-to-production.sh\nEOF"}, "expect": "deny"}
 {"name": "la testa dell'heredoc resta analizzata anche verso un interprete", "tool_name": "Bash", "tool_input": {"command": "scripts/deploy/promote-to-production.sh && python3 - <<'PY'\nprint('ok')\nPY"}, "expect": "deny"}
 {"name": "esecuzione vera del path: non e' una citazione", "tool_name": "Bash", "tool_input": {"command": "./scripts/deploy/promote-to-production.sh"}, "expect": "deny"}
+{"name": "issue #1: rm dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"rm -rf $HOME\""}, "expect": "deny"}
+{"name": "issue #1: rm dentro sh -c con apici singoli", "tool_name": "Bash", "tool_input": {"command": "sh -c 'rm -rf ~'"}, "expect": "deny"}
+{"name": "issue #1: rm dentro eval", "tool_name": "Bash", "tool_input": {"command": "eval \"rm -rf $HOME\""}, "expect": "deny"}
+{"name": "issue #1: rm dentro un comando remoto ssh", "tool_name": "Bash", "tool_input": {"command": "ssh host \"rm -rf ~\""}, "expect": "deny"}
+{"name": "issue #1: ssh con opzioni prima dell'host", "tool_name": "Bash", "tool_input": {"command": "ssh -p 2222 -o StrictHostKeyChecking=no host \"rm -rf $HOME\""}, "expect": "deny"}
+{"name": "issue #1: flag composto bash -lc", "tool_name": "Bash", "tool_input": {"command": "bash -lc \"rm -rf $BUILD\""}, "expect": "deny"}
+{"name": "issue #1: bash -c annidati", "tool_name": "Bash", "tool_input": {"command": "bash -c \"bash -c \\\"rm -rf ~\\\"\""}, "expect": "deny"}
+{"name": "issue #1: sudo dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"sudo apt-get update\""}, "expect": "ask"}
+{"name": "issue #1: dropdb dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"dropdb scratch_db\""}, "expect": "ask"}
+{"name": "issue #1: psql di scrittura su prod dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"psql -h db-produzione.esempio.com -c 'DELETE FROM utenti WHERE id = 1'\""}, "expect": "deny"}
+{"name": "issue #1: find -delete dalla home dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"find ~ -name '*.log' -delete\""}, "expect": "deny"}
+{"name": "issue #1: comando innocuo dentro bash -c resta ok", "tool_name": "Bash", "tool_input": {"command": "bash -c \"ls -la && echo fatto\""}, "expect": "allow"}
+{"name": "issue #1: comando remoto innocuo: ok", "tool_name": "Bash", "tool_input": {"command": "ssh host ls -la /srv"}, "expect": "allow"}
+{"name": "issue #1: citare bash -c non e' eseguirlo", "tool_name": "Bash", "tool_input": {"command": "grep -rn \"bash -c 'rm -rf'\" hooks/guard.py"}, "expect": "allow"}
+{"name": "issue #1: documentare bash -c non e' eseguirlo", "tool_name": "Bash", "tool_input": {"command": "echo \"mai scrivere bash -c 'rm -rf ~' in uno script\""}, "expect": "allow"}
