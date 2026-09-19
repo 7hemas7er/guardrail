@@ -207,3 +207,7 @@
 {"name": "MCP prod SELECT con punto e virgola dentro un literal: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT count(*) FROM log WHERE messaggio = 'delete from x; ok'"}, "expect": "allow"}
 {"name": "MCP prod scrittura vera dopo un literal innocuo: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT 'create' AS x; UPDATE utenti SET nome = 'y' WHERE id = 1"}, "expect": "deny"}
 {"name": "psql prod: gli apici di shell non sono literal SQL", "tool_name": "Bash", "tool_input": {"command": "psql postgresql://u:p@db-produzione.esempio.com:5432/appdb -c 'DELETE FROM utenti WHERE id = 5'"}, "expect": "deny"}
+{"name": "MCP prod finta scrittura fra apici pari: il DB la legge come literal+alias, non la esegue", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT 'a; UPDATE utenti SET ruolo = 'admin' WHERE id = 1; SELECT 'b"}, "expect": "allow"}
+{"name": "MCP prod apice spaiato in coda a una scrittura: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "DELETE FROM utenti WHERE nome = 'x"}, "expect": "deny"}
+{"name": "MCP prod dollar-quote con tag non riconosciuto resta conservativo: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT $tag$ UPDATE utenti SET x = 1 $tag$"}, "expect": "deny"}
+{"name": "MCP prod apice con escape backslash (dialetto non standard): deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT '\\'; UPDATE utenti SET ruolo = 1; --'"}, "expect": "deny"}
