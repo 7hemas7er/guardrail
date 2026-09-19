@@ -78,8 +78,15 @@ def sql_without_literals(sql: str) -> str:
     (payload di un tool MCP), MAI a una riga di shell: lì i singoli apici
     delimitano il payload di `psql -c '...'` e svuotarli nasconderebbe la
     scrittura vera.
+
+    Se dopo la rimozione resta un apice spaiato, il testo non è quotato in modo
+    pulito — o usa un dialetto che qui non si riconosce — e lo scheletro non è
+    affidabile: si torna al testo integrale, che al massimo blocca di troppo.
+    Un `'a; UPDATE ... SELECT 'b` non deve poter nascondere la scrittura dentro
+    un finto literal.
     """
-    return SQL_STRING_LITERAL.sub(" '' ", sql)
+    skeleton = SQL_STRING_LITERAL.sub(" ", sql)
+    return sql if "'" in skeleton else skeleton
 
 # Dimensione massima di uno script invocato che il hook accetta di leggere.
 SCRIPT_MAX_BYTES = 256 * 1024
