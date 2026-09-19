@@ -7,7 +7,7 @@ Vale per PostgreSQL, MySQL/MariaDB, Redis, Mongo, e per ogni via d'accesso:
 
 | Ambiente | Cosa può fare l'agente | Note |
 |---|---|---|
-| **Produzione** | solo `SELECT`, `EXPLAIN`, letture di schema | utente DB **read-only**; nessuna eccezione, nemmeno "una riga sola" |
+| **Produzione** | solo `SELECT`, `EXPLAIN`, letture di schema | **una query di sola lettura è sempre autorizzata**, anche in produzione; a essere vietata è la scrittura, senza eccezioni, nemmeno "una riga sola" |
 | **Test condiviso** | letture; scritture solo con conferma | altri lo usano: uno schema rotto blocca la suite di tutti |
 | **Dev locale / usa e getta** | tutto, tranne DROP DATABASE e TRUNCATE | è il posto per provare |
 
@@ -101,3 +101,9 @@ Per i server MCP non SQL (Azure, GitHub, filesystem…) l'intenzione si legge da
 nome del tool e dai campi che descrivono l'operazione (`command`, `action`,
 `method`, `state`); i tool di sola lettura (`get_*`, `list_*`, `search_*`) non
 vengono toccati.
+
+Sul payload SQL di un tool MCP la classificazione ignora il contenuto dei literal
+stringa (`'...'`, `$$...$$`): un verbo di scrittura che compare dentro un valore
+confrontato non rende la query una scrittura, e una `SELECT` resta autorizzata.
+Vale **solo** per il SQL puro: in una riga di shell gli apici delimitano il
+payload di `psql -c '...'`, quindi lì il testo si valuta per intero.

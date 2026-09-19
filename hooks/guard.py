@@ -65,6 +65,22 @@ WRITE_SQL = re.compile(
 )
 READ_ONLY_START = re.compile(r"^\s*(SELECT|WITH|EXPLAIN|SHOW|DESCRIBE|DESC|TABLE|VALUES|\\d)", re.I)
 
+# Literal stringa SQL: '...' (con '' interno) e i dollar-quoted $$...$$.
+SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\$\$.*?\$\$", re.S)
+
+
+def sql_without_literals(sql: str) -> str:
+    """Il testo SQL con i literal stringa svuotati.
+
+    Serve solo a cercare le parole chiave dove sono davvero parole chiave: un
+    verbo di scrittura dentro un valore confrontato (`WHERE nome = '...create'`)
+    non rende la query una scrittura. Si applica esclusivamente a SQL puro
+    (payload di un tool MCP), MAI a una riga di shell: lì i singoli apici
+    delimitano il payload di `psql -c '...'` e svuotarli nasconderebbe la
+    scrittura vera.
+    """
+    return SQL_STRING_LITERAL.sub(" '' ", sql)
+
 # Dimensione massima di uno script invocato che il hook accetta di leggere.
 SCRIPT_MAX_BYTES = 256 * 1024
 
@@ -980,14 +996,18 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     is_shared = server in config["ask_mcp_servers"]
 
     sql = extract_sql(tool_input)
-    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and (WRITE_SQL.search(sql) or READ_ONLY_START.match(sql)):
-        statements = [s for s in re.split(r";", re.sub(r"--[^\n]*", "", sql)) if s.strip()]
+    # La classificazione lavora sul SQL senza literal stringa: una query di sola
+    # lettura resta autorizzata ovunque, produzione compresa, anche quando un
+    # valore confrontato contiene un verbo di scrittura.
+    skeleton = sql_without_literals(sql) if sql else ""
+    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and (WRITE_SQL.search(skeleton) or READ_ONLY_START.match(skeleton)):
+        statements = [s for s in re.split(r";", re.sub(r"--[^\n]*", "", skeleton)) if s.strip()]
         writes = [s for s in statements if WRITE_SQL.search(s) or not READ_ONLY_START.match(s)]
         if not writes:
             return
         if is_prod:
             deny(f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge soltanto. (guardrail: database.md)")
-        check_unbounded_writes(sql)
+        check_unbounded_writes(skeleton)
         if is_shared:
             ask(f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone. Conferma?")
         return
