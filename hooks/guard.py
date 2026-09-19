@@ -548,6 +548,110 @@ def check_scripts(text: str, config: dict, cwd: str) -> None:
 # Bash: la funzione principale
 # ---------------------------------------------------------------------------
 
+# Interpreti di shell che accettano il codice come *stringa*. `python`, `node` e
+# simili restano fuori: il loro argomento non è shell, e indovinarne il senso
+# sarebbe peggio che dichiarare il limite.
+SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "ash"})
+# Opzioni di ssh che si portano dietro un valore: quel valore non è il comando.
+SSH_VALUE_FLAGS = frozenset({"-o", "-p", "-i", "-l", "-F", "-b", "-c", "-D", "-E", "-e", "-I",
+                             "-J", "-L", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"})
+MAX_DEPTH = 4
+
+
+def inline_shell_payloads(text: str) -> list[str]:
+    """Il codice passato a una shell come stringa: `bash -c "…"`, `sh -c '…'`,
+    `eval …`, `ssh host "…"`.
+
+    Il primo token di quella stringa **è** posizione di comando, ed è l'unico
+    posto in cui le regole ancorate alla posizione (rm, find -delete, sudo, i CLI
+    dei database) non guardavano. La ricorsione parte solo se l'interprete è
+    davvero invocato: in `grep -n "bash -c \\"rm -rf\\""` il comando è `grep`, e
+    non succede niente — la difesa dal falso positivo del 2026-09-17 resta.
+    """
+    lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    payloads: list[str] = []
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return payloads
+
+    at_start = True
+    indice = 0
+    while indice < len(tokens):
+        token = tokens[indice]
+        indice += 1
+        if token in SHELL_SEPARATORS:
+            at_start = True
+            continue
+        if not at_start:
+            continue
+        if ENV_ASSIGNMENT.fullmatch(token) or token in COMMAND_WRAPPERS:
+            continue
+        at_start = False
+        nome = os.path.basename(token)
+
+        # `bash -c "…"`, anche con flag composti (`-lc`, `-ec`).
+        if nome in SHELL_INTERPRETERS:
+            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
+                flag = tokens[indice]
+                indice += 1
+                if flag.startswith("-") and not flag.startswith("--") and "c" in flag:
+                    if indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
+                        payloads.append(tokens[indice])
+                        indice += 1
+                    break
+                if not flag.startswith("-"):
+                    break  # è il path di uno script: se ne occupa check_scripts
+        # `eval rm -rf "$X"`: tutto quello che segue è codice.
+        elif nome == "eval":
+            resto = []
+            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
+                resto.append(tokens[indice])
+                indice += 1
+            if resto:
+                payloads.append(" ".join(resto))
+        # `ssh [opzioni] host "…"`: il comando remoto è tutto ciò che segue l'host.
+        elif nome == "ssh":
+            host_visto = False
+            resto = []
+            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
+                pezzo = tokens[indice]
+                indice += 1
+                if not host_visto:
+                    if pezzo in SSH_VALUE_FLAGS:
+                        indice += 1
+                        continue
+                    if pezzo.startswith("-"):
+                        continue
+                    host_visto = True
+                    continue
+                resto.append(pezzo)
+            if resto:
+                payloads.append(" ".join(resto))
+    return payloads
+
+
+def check_inline_shell(text: str, config: dict, cwd: str, depth: int) -> None:
+    """Analizza il codice passato a una shell come stringa, con le stesse regole.
+
+    A differenza di uno script del repo, qui non si declassa il `deny` a `ask`:
+    lo script lo ha scritto un umano e l'umano decide, questa stringa l'ha
+    scritta chi ha scritto il comando, un istante fa.
+    """
+    if depth >= MAX_DEPTH:
+        return
+    for payload in inline_shell_payloads(text):
+        try:
+            check_bash(payload, config, cwd, depth + 1)
+        except Decision as trovato:
+            raise Decision(
+                trovato.verdict,
+                f"dentro una stringa passata a una shell ({payload[:70]!r}): {trovato.reason}",
+            ) from None
+
+
 def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
     # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
@@ -561,6 +665,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     if (pattern := matches_any(config["deny_commands"], testo_progetto)):
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
+    check_inline_shell(text, config, cwd, depth)
     check_rm(text)
     check_secret_reads(text)
     check_protected_writes(text)
