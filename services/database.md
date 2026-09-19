@@ -76,8 +76,10 @@ Vale a queste condizioni, tutte necessarie.
 
 | Azione | Esito |
 |---|---|
-| SQL di scrittura (INSERT/UPDATE/DELETE/DDL) verso un server MCP o host di produzione | BLOCCO |
-| SQL di scrittura verso un server MCP in `ask_mcp_servers` | CONFERMA |
+| SQL di scrittura (INSERT/UPDATE/DELETE/DDL) verso un server MCP o host di produzione | BLOCCO, con la query mostrata |
+| SQL di scrittura verso un server MCP in `ask_mcp_servers` | CONFERMA, con la query mostrata |
+| Payload SQL che il hook non riesce a classificare, verso un server MCP di produzione | BLOCCO, con la query mostrata |
+| Stesso payload verso un server MCP condiviso | CONFERMA, con la query mostrata |
 | `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE`, su qualunque ambiente | BLOCCO |
 | `DELETE FROM` o `UPDATE … SET` senza `WHERE` | BLOCCO |
 | `dropdb`, `pg_restore --clean` verso produzione | BLOCCO |
@@ -102,8 +104,39 @@ nome del tool e dai campi che descrivono l'operazione (`command`, `action`,
 `method`, `state`); i tool di sola lettura (`get_*`, `list_*`, `search_*`) non
 vengono toccati.
 
-Sul payload SQL di un tool MCP la classificazione ignora il contenuto dei literal
-stringa (`'...'`, `$$...$$`): un verbo di scrittura che compare dentro un valore
-confrontato non rende la query una scrittura, e una `SELECT` resta autorizzata.
-Vale **solo** per il SQL puro: in una riga di shell gli apici delimitano il
-payload di `psql -c '...'`, quindi lì il testo si valuta per intero.
+### Come viene classificato un payload SQL via MCP
+
+Il testo viene attraversato una volta sola tenendo lo stato — literal fra apici
+(con `''` raddoppiato), dollar-quote con tag, commento di riga, commento a
+blocco annidato — e di literal e commenti resta il guscio vuoto. Serve perché
+letterali e commenti si intrecciano: un apice dentro `/* … */` non è un apice
+per il database, ma per una ricerca testuale sì, e in quel finto literal ci si
+nasconde una `DELETE`. Vale **solo** per il SQL puro: in una riga di shell gli
+apici delimitano il payload di `psql -c '...'`, quindi lì il testo si valuta per
+intero.
+
+Sullo scheletro la risposta è una di tre:
+
+| | Cosa vuol dire | Produzione | Condiviso |
+|---|---|---|---|
+| **lettura** | ogni istruzione comincia per `SELECT`/`WITH`/`EXPLAIN`… o delimita una transazione, e nessuna scrive | permessa, senza attrito | permessa |
+| **scrittura** | c'è un verbo di scrittura, un `SELECT … INTO`, un `INTO OUTFILE` | BLOCCO | CONFERMA |
+| **incerta** | un literal o un commento resta aperto; oppure l'istruzione non si classifica (`CALL`, `DO $$ … $$`, `COPY … FROM`); oppure compare una funzione che legge solo all'apparenza (`dblink`, `pg_read_file`, `pg_terminate_backend`, `setval`…) | BLOCCO | CONFERMA |
+
+`incerta` non è un ripiego: è la risposta onesta quando il confine fra codice e
+dati non si legge. Un `SELECT dblink('…', 'DELETE FROM utenti')` è una `SELECT`
+solo di facciata — il SQL che esegue sta dentro un literal, cioè esattamente
+dove lo scheletro non guarda.
+
+**La query viene mostrata** nel messaggio di blocco o di conferma, troncata e con
+le credenziali redatte: chi decide deve vedere cosa girerebbe. I valori restano
+in chiaro, perché sono ciò che rende la query giudicabile — e quindi finiscono
+nella trascrizione e nel log: se sono dati personali vale la regola 7, e la
+query si guarda, non si copia altrove.
+
+Su produzione l'esito è **BLOCCO**, non conferma, anche quando la query
+sembrerebbe innocua. In modalità auto la conferma la concede l'agente: se la
+decisione deve essere di un umano, l'unico esito che non si scavalca è il blocco.
+Per ripartire: riscrivi la query senza commenti e con i literal chiusi, così
+viene riconosciuta come lettura; se deve davvero scrivere, la esegue un
+operatore.

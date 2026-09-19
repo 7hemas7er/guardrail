@@ -9,7 +9,7 @@
     {
       "name": "guardrail",
       "description": "Regole aziendali per gli agenti: hook che bloccano comandi distruttivi, deploy con cancellazione e SQL di scrittura in produzione; regole essenziali a ogni sessione; regole per servizio via skill.",
-      "version": "0.7.2",
+      "version": "0.8.0",
       "category": "security",
       "source": "./"
     }

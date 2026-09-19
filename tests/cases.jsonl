@@ -209,5 +209,22 @@
 {"name": "psql prod: gli apici di shell non sono literal SQL", "tool_name": "Bash", "tool_input": {"command": "psql postgresql://u:p@db-produzione.esempio.com:5432/appdb -c 'DELETE FROM utenti WHERE id = 5'"}, "expect": "deny"}
 {"name": "MCP prod finta scrittura fra apici pari: il DB la legge come literal+alias, non la esegue", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT 'a; UPDATE utenti SET ruolo = 'admin' WHERE id = 1; SELECT 'b"}, "expect": "allow"}
 {"name": "MCP prod apice spaiato in coda a una scrittura: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "DELETE FROM utenti WHERE nome = 'x"}, "expect": "deny"}
-{"name": "MCP prod dollar-quote con tag non riconosciuto resta conservativo: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT $tag$ UPDATE utenti SET x = 1 $tag$"}, "expect": "deny"}
+{"name": "MCP prod dollar-quote con tag: e' una costante, la SELECT non esegue niente", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT $tag$ UPDATE utenti SET x = 1 $tag$"}, "expect": "allow"}
+{"name": "MCP prod DO in dollar-quote: il corpo esegue, quindi non si classifica", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "DO $$ BEGIN DELETE FROM utenti; END $$"}, "expect": "deny"}
+{"name": "MCP prod dollar-quote aperto e mai chiuso: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT $tag$ ciao"}, "expect": "deny"}
 {"name": "MCP prod apice con escape backslash (dialetto non standard): deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT '\\'; UPDATE utenti SET ruolo = 1; --'"}, "expect": "deny"}
+{"name": "MCP prod scrittura nascosta fra due commenti a blocco: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "/* ' */ DELETE FROM utenti /* ' */"}, "expect": "deny"}
+{"name": "MCP prod dollar-quote aperto dentro un commento di riga: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT 1 -- x$$\n; DELETE FROM utenti; SELECT $$y$$"}, "expect": "deny"}
+{"name": "MCP prod commento a blocco e literal intrecciati: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT 'a /* b' ; DELETE FROM utenti ; SELECT '*/ c'"}, "expect": "deny"}
+{"name": "MCP prod commento di riga legittimo su una lettura: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "-- conteggio degli utenti attivi\nSELECT count(*) FROM utenti WHERE attivo"}, "expect": "allow"}
+{"name": "MCP prod commento a blocco legittimo su una lettura: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT count(*) /* solo i vivi */ FROM utenti"}, "expect": "allow"}
+{"name": "MCP prod transazione di sola lettura: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "BEGIN; SELECT count(*) FROM utenti; COMMIT"}, "expect": "allow"}
+{"name": "MCP prod CALL di una procedura: non si classifica, deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "CALL pulisci_archivio()"}, "expect": "deny"}
+{"name": "MCP prod COPY FROM: non si classifica, deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "COPY utenti FROM '/tmp/utenti.csv'"}, "expect": "deny"}
+{"name": "MCP prod SELECT INTO crea una tabella: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT * INTO backup_utenti FROM utenti"}, "expect": "deny"}
+{"name": "MCP condiviso: query non classificabile chiede conferma", "tool_name": "mcp__postgres-test__query", "tool_input": {"sql": "CALL pulisci_archivio()"}, "expect": "ask"}
+{"name": "MCP server non SQL: il campo query non e' SQL e non viene classificato", "tool_name": "mcp__ricerca__query", "tool_input": {"query": "utenti attivi nell'ultimo mese"}, "expect": "allow"}
+{"name": "MCP prod dblink esegue SQL altrove: non si classifica, deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT dblink('host=db user=app', 'DELETE FROM utenti')"}, "expect": "deny"}
+{"name": "MCP prod pg_terminate_backend non e' una lettura: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT pg_terminate_backend(12345)"}, "expect": "deny"}
+{"name": "MCP prod SELECT INTO OUTFILE scrive un file: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT * FROM utenti INTO OUTFILE '/tmp/utenti.csv'"}, "expect": "deny"}
+{"name": "MCP prod lettura con funzioni normali: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT count(*), max(creato_il) FROM utenti WHERE attivo"}, "expect": "allow"}

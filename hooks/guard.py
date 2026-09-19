@@ -65,28 +65,135 @@ WRITE_SQL = re.compile(
 )
 READ_ONLY_START = re.compile(r"^\s*(SELECT|WITH|EXPLAIN|SHOW|DESCRIBE|DESC|TABLE|VALUES|\\d)", re.I)
 
-# Literal stringa SQL: '...' (con '' interno) e i dollar-quoted $$...$$.
-SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\$\$.*?\$\$", re.S)
+# Parole che dicono "qui c'è del SQL". Servono a non trattare come query il
+# campo `query` di un server MCP che SQL non ne parla affatto.
+SQL_KEYWORD = re.compile(
+    r"\b(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|MERGE|REPLACE"
+    r"|CALL|DO|COPY|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE|REFRESH|BEGIN|COMMIT|ROLLBACK)\b",
+    re.I,
+)
+# Istruzioni che non leggono e non scrivono: delimitano una transazione o
+# toccano lo stato di sessione. Non rendono una lettura una scrittura.
+SQL_NEUTRAL = re.compile(r"^\s*(BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK|END|SET|SHOW)\b", re.I)
+# `SELECT ... INTO tabella` crea una tabella: legge come una lettura, scrive.
+SELECT_INTO = re.compile(r"^\s*SELECT\b(?![^;]*\bINSERT\b)[^;]*\bINTO\s+[\w\".]+", re.I | re.S)
+# Funzioni che dentro una SELECT non sono letture: eseguono SQL altrove, toccano
+# il filesystem, interrompono sessioni, avanzano sequenze. `SELECT` da solo non
+# dimostra niente, e il SQL che queste eseguono sta dentro un literal, cioè
+# esattamente dove lo scheletro non guarda.
+SQL_UNSAFE_FUNC = re.compile(
+    r"\b(dblink(_exec)?|query_to_xml|pg_terminate_backend|pg_cancel_backend|pg_read_(binary_)?file"
+    r"|pg_ls_dir|lo_(import|export|unlink)|pg_stat_statements_reset|pg_logical_slot_get_changes"
+    r"|setval|nextval|load_file|sys_exec|sys_eval)\s*\(",
+    re.I,
+)
+# MySQL: `SELECT … INTO OUTFILE` scrive un file sul server.
+SELECT_OUTFILE = re.compile(r"\bINTO\s+(OUTFILE|DUMPFILE)\b", re.I)
+# Apertura di un dollar-quote: $$ oppure $tag$.
+DOLLAR_TAG = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 
 
-def sql_without_literals(sql: str) -> str:
-    """Il testo SQL con i literal stringa svuotati.
+def sql_normalizzato(sql: str) -> tuple[str, bool]:
+    """Il SQL con literal e commenti svuotati, e se ci si può fidare del risultato.
 
-    Serve solo a cercare le parole chiave dove sono davvero parole chiave: un
-    verbo di scrittura dentro un valore confrontato (`WHERE nome = '...create'`)
-    non rende la query una scrittura. Si applica esclusivamente a SQL puro
-    (payload di un tool MCP), MAI a una riga di shell: lì i singoli apici
-    delimitano il payload di `psql -c '...'` e svuotarli nasconderebbe la
-    scrittura vera.
+    Attraversa il testo una volta sola tenendo lo stato — testo, literal fra
+    apici (con `''` raddoppiato), dollar-quote con tag, commento di riga,
+    commento a blocco annidabile — perché letterali e commenti si intrecciano e
+    nessun ordine di sostituzioni regge: un apice dentro `/* … */` non è un
+    apice per il database, ma per una regex sì, e lì dentro ci si può nascondere
+    una `DELETE`.
 
-    Se dopo la rimozione resta un apice spaiato, il testo non è quotato in modo
-    pulito — o usa un dialetto che qui non si riconosce — e lo scheletro non è
-    affidabile: si torna al testo integrale, che al massimo blocca di troppo.
-    Un `'a; UPDATE ... SELECT 'b` non deve poter nascondere la scrittura dentro
-    un finto literal.
+    Si applica solo al SQL puro (payload di un tool MCP), MAI a una riga di
+    shell: lì gli apici delimitano il payload di `psql -c '...'` e svuotarli
+    nasconderebbe la scrittura vera.
+
+    Il secondo valore è falso quando a fine testo un literal o un commento è
+    rimasto aperto: il testo non si capisce, e chi non capisce non autorizza.
     """
-    skeleton = SQL_STRING_LITERAL.sub(" ", sql)
-    return sql if "'" in skeleton else skeleton
+    pezzi: list[str] = []
+    affidabile = True
+    i, n = 0, len(sql)
+    while i < n:
+        if sql.startswith("--", i):
+            fine = sql.find("\n", i)
+            pezzi.append(" ")
+            i = n if fine == -1 else fine
+            continue
+        if sql.startswith("/*", i):
+            livello, j = 1, i + 2
+            while j < n and livello:
+                if sql.startswith("/*", j):
+                    livello, j = livello + 1, j + 2
+                elif sql.startswith("*/", j):
+                    livello, j = livello - 1, j + 2
+                else:
+                    j += 1
+            affidabile = affidabile and livello == 0
+            pezzi.append(" ")
+            i = j
+            continue
+        if sql[i] == "'":
+            j, chiuso = i + 1, False
+            while j < n:
+                if sql[j] != "'":
+                    j += 1
+                elif j + 1 < n and sql[j + 1] == "'":
+                    j += 2
+                else:
+                    chiuso, j = True, j + 1
+                    break
+            affidabile = affidabile and chiuso
+            pezzi.append(" '' ")
+            i = j
+            continue
+        if (apertura := DOLLAR_TAG.match(sql, i)):
+            tag = apertura.group(0)
+            chiusura = sql.find(tag, apertura.end())
+            affidabile = affidabile and chiusura != -1
+            pezzi.append(" '' ")
+            i = n if chiusura == -1 else chiusura + len(tag)
+            continue
+        pezzi.append(sql[i])
+        i += 1
+    return "".join(pezzi), affidabile
+
+
+def classifica_sql(sql: str) -> str:
+    """`lettura`, `scrittura` o `incerta`.
+
+    `incerta` non è un ripiego: è la risposta onesta per un `DO $$ … $$`, una
+    `CALL`, un `COPY … FROM`, un literal non chiuso. Chi la riceve non deve
+    tirare a indovinare — su produzione si ferma e mostra la query.
+    """
+    scheletro, affidabile = sql_normalizzato(sql)
+    if not affidabile:
+        return "incerta"
+    istruzioni = [s for s in scheletro.split(";") if s.strip()]
+    if not istruzioni:
+        return "incerta"
+    if any(WRITE_SQL.search(s) or SELECT_INTO.match(s) or SELECT_OUTFILE.search(s) for s in istruzioni):
+        return "scrittura"
+    if any(SQL_UNSAFE_FUNC.search(s) for s in istruzioni):
+        return "incerta"
+    if all(READ_ONLY_START.match(s) or SQL_NEUTRAL.match(s) for s in istruzioni):
+        return "lettura"
+    return "incerta"
+
+
+def query_esposta(sql: str, limite: int = 300) -> str:
+    """La query dentro il messaggio: chi decide deve vedere cosa girerebbe.
+
+    Le credenziali si redigono — una connection string in un payload finirebbe
+    nella trascrizione e nel log — e il testo si tronca, perché serve a decidere,
+    non ad archiviare. I valori restano visibili: sono ciò che rende la query
+    giudicabile. Possono però essere dati personali, e il messaggio lo ricorda.
+    """
+    pulita = re.sub(r"(?i)\b(password|pwd|passwd|token|secret|api[_-]?key)\s*=\s*('[^']*'|[^\s')]+)", r"\1=***", sql)
+    pulita = re.sub(r"(?i)(://[^:\s/@]+):[^@\s/]+@", r"\1:***@", pulita)
+    pulita = " ".join(pulita.split())
+    if len(pulita) > limite:
+        pulita = f"{pulita[:limite]}… (+{len(pulita) - limite} caratteri)"
+    return pulita
 
 # Dimensione massima di uno script invocato che il hook accetta di leggere.
 SCRIPT_MAX_BYTES = 256 * 1024
@@ -1003,20 +1110,45 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     is_shared = server in config["ask_mcp_servers"]
 
     sql = extract_sql(tool_input)
-    # La classificazione lavora sul SQL senza literal stringa: una query di sola
-    # lettura resta autorizzata ovunque, produzione compresa, anche quando un
-    # valore confrontato contiene un verbo di scrittura.
-    skeleton = sql_without_literals(sql) if sql else ""
-    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and (WRITE_SQL.search(skeleton) or READ_ONLY_START.match(skeleton)):
-        statements = [s for s in re.split(r";", re.sub(r"--[^\n]*", "", skeleton)) if s.strip()]
-        writes = [s for s in statements if WRITE_SQL.search(s) or not READ_ONLY_START.match(s)]
-        if not writes:
+    # La classificazione distingue le tre risposte possibili, e la sola che
+    # autorizza è "lettura": una query di sola lettura resta permessa ovunque,
+    # produzione compresa, anche quando un valore confrontato contiene un verbo
+    # di scrittura. Tutto il resto si mostra a chi deve decidere.
+    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and SQL_KEYWORD.search(sql):
+        verdetto = classifica_sql(sql)
+        if verdetto == "lettura":
             return
+        testo = query_esposta(sql)
+        if verdetto == "incerta":
+            perche = (
+                "non riesco a dire se legge o scrive: contiene un commento, un dollar-quote, un literal "
+                "non chiuso o un'istruzione che non si classifica (CALL, DO, COPY…), e lì il confine fra "
+                "codice e dati non è leggibile con certezza"
+            )
+            if is_prod:
+                deny(
+                    f"query non classificabile sul server MCP {server!r}, che è PRODUZIONE — {perche}.\n"
+                    f"Sarebbe stato eseguito questo:\n    {testo}\n"
+                    "Riscrivila senza commenti né dollar-quote e con i literal chiusi, così posso "
+                    "riconoscerla come lettura; se deve davvero scrivere, la esegue un operatore. "
+                    "(guardrail: database.md)"
+                )
+            ask(
+                f"query non classificabile sul server MCP {server!r} — {perche}.\n"
+                f"Sta per essere eseguito questo:\n    {testo}\nConfermi?"
+            )
         if is_prod:
-            deny(f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge soltanto. (guardrail: database.md)")
-        check_unbounded_writes(skeleton)
+            deny(
+                f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge "
+                f"soltanto; le modifiche passano da una migration nel repo o da un operatore.\n"
+                f"Sarebbe stato eseguito questo:\n    {testo}\n(guardrail: database.md)"
+            )
+        check_unbounded_writes(sql_normalizzato(sql)[0])
         if is_shared:
-            ask(f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone. Conferma?")
+            ask(
+                f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone.\n"
+                f"Sta per essere eseguito questo:\n    {testo}\nConfermi?"
+            )
         return
 
     # Ogni altro server: Azure, GitHub, filesystem, ... L'intenzione sta nel nome
