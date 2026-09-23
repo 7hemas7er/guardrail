@@ -1,6 +1,6 @@
 {
   "name": "guardrail",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Regole aziendali per gli agenti: blocco o conferma su comandi distruttivi, deploy con cancellazione, SQL di scrittura in produzione e file di segreti; regole essenziali iniettate a ogni sessione; regole per servizio caricate dalla skill.",
   "author": {
     "name": "7hemas7er"
