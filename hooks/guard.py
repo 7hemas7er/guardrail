@@ -19,6 +19,10 @@ Quattro famiglie di regole, tutte nella funzione `decide`:
                 di guardrail stessa, e tutto ciò che sta fuori dal progetto
     Read        file di segreti, ~/.ssh e le altre directory di credenziali
 
+Con ~/.config/guardrail/mask.tsv presente, in più riscrive ogni comando Bash perché
+passi dal mascheramento dei nomi di rete, e nega il Read dei file che li contengono
+(vedi hooks/mask.py). Senza la mappa, nessuna differenza.
+
 La configurazione per repo sta in `.guardrail.json` (cercato dalla cwd verso l'alto)
 e in `~/.guardrail.json`; le liste si sommano. Vedi README.md.
 
@@ -34,6 +38,8 @@ import shlex
 import sys
 import time
 from pathlib import Path
+
+import mask  # hooks/mask.py: mascheramento dei nomi di rete, attivo solo con la mappa
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -1302,16 +1308,36 @@ def check_write(tool_input: dict, cwd: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-def decide(payload: dict) -> None:
+def check_read_masked(tool_input: dict, pairs: list[tuple[str, str]], cwd: str) -> None:
+    """Con il mascheramento attivo, Read non deve mostrare un nome reale: il suo output
+    non si può riscrivere, quello di Bash sì (mask.py)."""
+    if not pairs:
+        return
+    path = target_path(tool_input)
+    if path is None:
+        return
+    if not path.is_absolute() and cwd:
+        path = Path(cwd) / path
+    if path.resolve() == mask.map_path().resolve() or mask.file_contains_real(path, pairs):
+        deny(
+            f"{path} contiene nomi di rete mascherati, e l'output del tool Read non si può filtrare. "
+            "Leggilo via Bash (cat, sed -n, head): lì i nomi escono già sostituiti dal segnaposto."
+        )
+
+
+def decide(payload: dict, pairs: list[tuple[str, str]] | None = None) -> None:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     cwd = str(payload.get("cwd") or "")
     config = load_config(cwd)
+    pairs = pairs or []
 
     if tool == "Bash":
-        check_bash(str(tool_input.get("command", "")), config, cwd)
+        # Si giudica il comando che la macchina eseguirà davvero, con i nomi reali.
+        check_bash(mask.unmask(str(tool_input.get("command", "")), pairs), config, cwd)
     elif tool == "Read":
         check_read(tool_input)
+        check_read_masked(tool_input, pairs, cwd)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         check_write(tool_input, cwd)
     elif tool.startswith("mcp__"):
@@ -1345,26 +1371,48 @@ def main() -> int:
     if not isinstance(payload, dict):
         return 0
 
+    # Il mascheramento non segue GUARDRAIL_DISABLE: spegnere i controlli non deve
+    # rimettere in chiaro i nomi. Lo si spegne togliendo la mappa.
+    try:
+        pairs = mask.load_pairs()
+    except mask.MappaNonValida as exc:
+        # Fail-closed: una mappa rotta non deve far passare l'output in chiaro.
+        if payload.get("tool_name") in ("Bash", "Read"):
+            log_decision(payload, "deny", str(exc))
+            emit(payload, [], "deny", f"{exc}. Correggi la mappa o toglila per disattivare il mascheramento.")
+        return 0
+
     if os.environ.get("GUARDRAIL_DISABLE") == "1":
         log_decision(payload, "disabled", "GUARDRAIL_DISABLE=1")
+        emit(payload, pairs)
         return 0
 
     try:
-        decide(payload)
+        decide(payload, pairs)
     except Decision as decision:
-        log_decision(payload, decision.verdict, decision.reason)
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision.verdict,
-                "permissionDecisionReason": f"[guardrail] {decision.reason}",
-            }
-        }))
+        reason = mask.mask(decision.reason, pairs)
+        log_decision(payload, decision.verdict, reason)
+        emit(payload, pairs, decision.verdict, reason)
         return 0
     except Exception as exc:  # noqa: BLE001 — un bug del guard non deve mai bloccare il lavoro
-        print(f"[guardrail] errore interno, tool lasciato passare: {exc}", file=sys.stderr)
-        return 0
+        print(f"[guardrail] errore interno, tool lasciato passare: {mask.mask(str(exc), pairs)}", file=sys.stderr)
+    emit(payload, pairs)
     return 0
+
+
+def emit(payload: dict, pairs: list[tuple[str, str]], verdict: str = "", reason: str = "") -> None:
+    """Stampa la risposta del hook: la decisione, se c'è, e il comando Bash riscritto
+    per il mascheramento, se la mappa è attiva. Nessuna delle due: nessun output."""
+    out: dict = {"hookEventName": "PreToolUse"}
+    if verdict:
+        out["permissionDecision"] = verdict
+        out["permissionDecisionReason"] = f"[guardrail] {reason}"
+    tool_input = payload.get("tool_input") or {}
+    command = tool_input.get("command") if payload.get("tool_name") == "Bash" else None
+    if pairs and verdict != "deny" and isinstance(command, str) and command.strip():
+        out["updatedInput"] = {**tool_input, "command": mask.wrap_command(command)}
+    if len(out) > 1:
+        print(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

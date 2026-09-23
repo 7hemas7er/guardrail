@@ -27,7 +27,15 @@ def run_case(case: dict) -> str:
     # `config` per caso: serve ai casi che verificano la configurazione di questo
     # repo (.guardrail.json) invece della fixture. Il valore è relativo alla root.
     config = ROOT / case["config"] if case.get("config") else CONFIG
-    env = dict(os.environ, GUARDRAIL_CONFIG=str(config), HOME=os.environ.get("HOME", "/home/master"))
+    # `mask_map`: mappa di mascheramento per il caso. Senza, una mappa che non esiste,
+    # così quella vera della macchina non cambia l'esito degli altri casi.
+    mappa = ROOT / case["mask_map"] if case.get("mask_map") else ROOT / "tests" / "nessuna-mappa.tsv"
+    env = dict(
+        os.environ,
+        GUARDRAIL_CONFIG=str(config),
+        GUARDRAIL_MASK_MAP=str(mappa),
+        HOME=os.environ.get("HOME", "/home/master"),
+    )
     env.pop("GUARDRAIL_DISABLE", None)
     proc = subprocess.run(
         [sys.executable, str(GUARD)],
@@ -38,15 +46,17 @@ def run_case(case: dict) -> str:
         check=False,
     )
     if proc.returncode != 0:
-        return f"exit {proc.returncode}: {proc.stderr.strip()[:200]}", ""
+        return f"exit {proc.returncode}: {proc.stderr.strip()[:200]}", "", None
     out = proc.stdout.strip()
     if not out:
-        return "allow", ""
+        return "allow", "", None
     try:
         esito = json.loads(out)["hookSpecificOutput"]
-        return esito["permissionDecision"], esito.get("permissionDecisionReason", "")
-    except (ValueError, KeyError):
-        return f"output non valido: {out[:200]}", ""
+        # Senza permissionDecision il hook ha solo riscritto l'input: il tool passa.
+        comando = (esito.get("updatedInput") or {}).get("command")
+        return esito.get("permissionDecision", "allow"), esito.get("permissionDecisionReason", ""), comando
+    except (ValueError, KeyError, AttributeError):
+        return f"output non valido: {out[:200]}", "", None
 
 
 def main() -> int:
@@ -60,11 +70,21 @@ def main() -> int:
                 continue
             case = json.loads(line)
             total += 1
-            got, reason = run_case(case)
+            got, reason, comando = run_case(case)
             # `reason_contains`: per i casi in cui conta anche *cosa* dice il hook,
             # non solo il verdetto (es. l'avviso che un allow_scripts non vale più).
             atteso_nel_motivo = case.get("reason_contains", "")
             ok = got == case["expect"] and atteso_nel_motivo in reason
+            # `rewritten`: true se il comando Bash deve uscire riscritto, false se intatto.
+            # `rewritten_excludes`: testo che non deve comparire nel comando riscritto
+            # (un nome reale), né nel motivo.
+            if "rewritten" in case:
+                riscritto = comando is not None
+                ok = ok and riscritto == case["rewritten"]
+                if riscritto and case["rewritten"]:
+                    ok = ok and case["tool_input"]["command"] in comando
+            for vietato in case.get("rewritten_excludes", []):
+                ok = ok and vietato.lower() not in (comando or "").lower() and vietato.lower() not in reason.lower()
             failures += 0 if ok else 1
             if verbose or not ok:
                 mark = "ok " if ok else "FAIL"

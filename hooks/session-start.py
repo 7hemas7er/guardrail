@@ -26,6 +26,23 @@ print("<!-- guardrail: regole essenziali, iniettate a ogni sessione -->")
 print(text)
 print(f"<!-- regole complete per servizio: {root / 'services'} (skill: guardrail) -->")
 
+# Con la mappa attiva il modello deve sapere che i segnaposto sono nomi veri a tutti
+# gli effetti, altrimenti prova a "correggerli". Si elencano solo i segnaposto.
+try:
+    import mask
+
+    segnaposto = sorted({finto for _, finto in mask.load_pairs()})
+except Exception:  # noqa: BLE001 — una mappa rotta la segnala guard.py al primo comando
+    segnaposto = []
+if segnaposto:
+    print(
+        "\n<!-- guardrail: mascheramento nomi di rete attivo -->\n"
+        f"Alcuni nomi di rete sono mascherati: nell'output di Bash compaiono come {', '.join(segnaposto)}. "
+        "Usali nei comandi come se fossero i nomi veri: guardrail li converte prima dell'esecuzione. "
+        "Non cercare di ricostruire gli originali. Il tool Read è negato sui file che li contengono: "
+        "leggili via Bash (cat, sed -n)."
+    )
+
 STATE = Path.home() / ".claude" / "guardrail.state.json"
 
 

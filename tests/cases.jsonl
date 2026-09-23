@@ -228,3 +228,14 @@
 {"name": "MCP prod pg_terminate_backend non e' una lettura: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT pg_terminate_backend(12345)"}, "expect": "deny"}
 {"name": "MCP prod SELECT INTO OUTFILE scrive un file: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT * FROM utenti INTO OUTFILE '/tmp/utenti.csv'"}, "expect": "deny"}
 {"name": "MCP prod lettura con funzioni normali: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT count(*), max(creato_il) FROM utenti WHERE attivo"}, "expect": "allow"}
+# --- mascheramento dei nomi di rete (hooks/mask.py) ---
+{"name": "senza mappa il comando non si tocca", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "expect": "allow", "rewritten": false}
+{"name": "con la mappa il comando passa dal runner", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "allow", "rewritten": true, "rewritten_excludes": ["magazzino"]}
+{"name": "con la mappa una conferma porta anche il comando riscritto", "tool_name": "Bash", "tool_input": {"command": "sudo apt-get install -y jq"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "ask", "rewritten": true}
+{"name": "con la mappa un blocco non riscrive", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"$S\""}, "mask_map": "tests/fixtures/mask.tsv", "expect": "deny", "rewritten": false}
+{"name": "si giudica il comando con i nomi reali, e il motivo resta mascherato", "tool_name": "Bash", "tool_input": {"command": "dropdb -h dbuno appdb"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "deny", "rewritten": false, "rewritten_excludes": ["db-produzione"]}
+{"name": "Read di un file con un nome reale: negato", "tool_name": "Read", "tool_input": {"file_path": "tests/fixtures/con-nome-reale.txt"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "deny", "reason_contains": "via Bash", "rewritten_excludes": ["magazzino"]}
+{"name": "Read di un file senza nomi reali: ok", "tool_name": "Read", "tool_input": {"file_path": "tests/fixtures/innocuo.sh"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "allow"}
+{"name": "Read della mappa stessa: negato", "tool_name": "Read", "tool_input": {"file_path": "tests/fixtures/mask.tsv"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "deny"}
+{"name": "senza mappa Read di quel file: ok", "tool_name": "Read", "tool_input": {"file_path": "tests/fixtures/con-nome-reale.txt"}, "expect": "allow"}
+{"name": "mappa rotta: Bash si ferma invece di andare in chiaro", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "mask_map": "tests/fixtures/mask-rotta.tsv", "expect": "deny", "reason_contains": "due campi"}

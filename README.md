@@ -118,6 +118,40 @@ Le liste si sommano con `~/.guardrail.json`, se esiste. `GUARDRAIL_CONFIG=<file>
 sostituisce entrambi (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
 scelta viene registrata nel log.
 
+## Mascheramento dei nomi di rete
+
+Per non mandare al modello i nomi degli host della propria rete (`nas-magazzino.lan`
+diventa `nas-sede1.lan`). Si attiva creando `~/.config/guardrail/mask.tsv`, fuori
+da ogni repo, **mai** in `.guardrail.json`, che nei progetti è tracciato:
+
+```
+# nome-reale   segnaposto
+magazzino      sede1
+```
+
+Una coppia per riga, separata da spazi o TAB. Il nome è sostituito solo come parola
+intera (`nas-magazzino` sì, `magazzinone` no), senza distinguere maiuscole e minuscole. Il
+segnaposto deve essere una parola che non compare altrove. Senza file, nessuna
+differenza di comportamento.
+
+| Canale | Cosa succede |
+|---|---|
+| Bash | `guard.py` riscrive il comando perché passi da `hooks/mask.py run`: i segnaposto diventano nomi reali prima dell'esecuzione, i nomi reali tornano segnaposto nell'output (stdout e stderr uniti). Il comando riscritto contiene solo il testo del modello: la mappa la legge il runner |
+| Read | negato sui file che contengono un nome reale, e sulla mappa: vanno letti con `cat` via Bash |
+| Prompt | l'hook `UserPromptSubmit` blocca il prompt che contiene un nome reale: un hook non può riscriverlo |
+| Grep, Glob | **non coperti**: il loro output arriva al modello così com'è |
+
+Le regole di `guard.py` valutano il comando con i nomi reali, quindi un
+`prod_patterns` scritto sul nome vero continua a funzionare; motivi e log escono
+mascherati. Il mascheramento **non** segue `GUARDRAIL_DISABLE`: si spegne togliendo
+la mappa. Una mappa che esiste ma è illeggibile o incoerente blocca Bash e Read
+invece di lasciarli andare in chiaro.
+
+Costi della riscrittura: il comando gira in un `bash -c` separato, quindi un `cd`
+non sopravvive al comando successivo e le funzioni della shell di Claude Code non
+ci sono; le regole `allow` per prefisso delle settings non corrispondono più al
+comando riscritto, quindi le conferme aumentano.
+
 ## Log
 
 Ogni `deny` e `ask` finisce in `~/.claude/guardrail.log.jsonl` con tool, cwd,
@@ -136,6 +170,7 @@ dello strumento. Solo prosa: nessun blocco automatico.
 ```
 python3 tests/run.py                  # casi del hook guard.py, deve restare verde
 python3 tests/test_session_start.py   # regole iniettate e avvisi una tantum
+python3 tests/test_mask.py            # mascheramento: comandi riscritti eseguiti davvero
 ```
 
 I casi sono in `tests/cases.jsonl`: uno per riga, con l'esito atteso. Una regola
@@ -143,7 +178,9 @@ nuova arriva con il suo caso e con il motivo (l'incidente o il quasi-incidente)
 nel file di servizio corrispondente. Un caso può aggiungere
 `"config": ".guardrail.json"` per essere valutato con la configurazione di questo
 repo invece della fixture: è così che si verificano le proprie `deny_commands`,
-che altrimenti bloccherebbero il comando stesso che prova a verificarle. Gli script in `tests/fixtures/` servono ai
+che altrimenti bloccherebbero il comando stesso che prova a verificarle. Con
+`"mask_map"` il caso gira con una mappa di mascheramento; senza, con la mappa
+assente, così quella della macchina non cambia gli esiti. Gli script in `tests/fixtures/` servono ai
 casi che verificano la scansione degli script invocati: non vanno eseguiti.
 
 Per scrivere file che *citano* comandi pericolosi (documentazione, casi di test)
@@ -169,6 +206,7 @@ CLAUDE.md                 importa i due file sopra per Claude Code
 services/                 regole per tipologia di servizio
 hooks/guard.py            hook PreToolUse: allow / ask / deny
 hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md
+hooks/mask.py             mascheramento dei nomi di rete: runner e hook UserPromptSubmit
 hooks/hooks.json          registrazione dei hook nel plugin
 skills/guardrail/         skill che carica il file di servizio giusto
 commands/check.md         /guardrail:check — il hook è attivo?
