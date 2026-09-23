@@ -53,8 +53,7 @@ def run_case(case: dict) -> str:
     try:
         esito = json.loads(out)["hookSpecificOutput"]
         # Senza permissionDecision il hook ha solo riscritto l'input: il tool passa.
-        comando = (esito.get("updatedInput") or {}).get("command")
-        return esito.get("permissionDecision", "allow"), esito.get("permissionDecisionReason", ""), comando
+        return esito.get("permissionDecision", "allow"), esito.get("permissionDecisionReason", ""), esito.get("updatedInput")
     except (ValueError, KeyError, AttributeError):
         return f"output non valido: {out[:200]}", "", None
 
@@ -70,21 +69,26 @@ def main() -> int:
                 continue
             case = json.loads(line)
             total += 1
-            got, reason, comando = run_case(case)
+            got, reason, input_riscritto = run_case(case)
+            comando = (input_riscritto or {}).get("command") if case["tool_name"] == "Bash" else None
             # `reason_contains`: per i casi in cui conta anche *cosa* dice il hook,
             # non solo il verdetto (es. l'avviso che un allow_scripts non vale più).
             atteso_nel_motivo = case.get("reason_contains", "")
             ok = got == case["expect"] and atteso_nel_motivo in reason
             # `rewritten`: true se il comando Bash deve uscire riscritto, false se intatto.
-            # `rewritten_excludes`: testo che non deve comparire nel comando riscritto
-            # (un nome reale), né nel motivo.
+            # `rewritten_excludes`: testo che non deve comparire nell'input riscritto
+            # (un termine reale), né nel motivo.
+            # `updated_input`: i campi che l'input riscritto deve avere (tool diversi da Bash).
             if "rewritten" in case:
                 riscritto = comando is not None
                 ok = ok and riscritto == case["rewritten"]
                 if riscritto and case["rewritten"]:
                     ok = ok and case["tool_input"]["command"] in comando
+            for campo, valore in case.get("updated_input", {}).items():
+                ok = ok and (input_riscritto or {}).get(campo) == valore
+            visibile = json.dumps(input_riscritto or {}, ensure_ascii=False).lower() + reason.lower()
             for vietato in case.get("rewritten_excludes", []):
-                ok = ok and vietato.lower() not in (comando or "").lower() and vietato.lower() not in reason.lower()
+                ok = ok and vietato.lower() not in visibile
             failures += 0 if ok else 1
             if verbose or not ok:
                 mark = "ok " if ok else "FAIL"

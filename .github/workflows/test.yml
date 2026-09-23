@@ -25,7 +25,7 @@ jobs:
           bash -n hooks/run-python.sh tests/fixtures/*.sh
       - name: casi del hook guard.py
         run: python3 tests/run.py -v
-      - name: mascheramento dei nomi di rete
+      - name: mascheramento dei termini riservati
         run: python3 tests/test_mask.py
       - name: session-start (regole, avvisi una tantum)
         run: python3 tests/test_session_start.py

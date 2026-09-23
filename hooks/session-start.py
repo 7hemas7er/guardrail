@@ -26,22 +26,44 @@ print("<!-- guardrail: regole essenziali, iniettate a ogni sessione -->")
 print(text)
 print(f"<!-- regole complete per servizio: {root / 'services'} (skill: guardrail) -->")
 
-# Con la mappa attiva il modello deve sapere che i segnaposto sono nomi veri a tutti
-# gli effetti, altrimenti prova a "correggerli". Si elencano solo i segnaposto.
+# Con la mappa attiva il modello deve sapere che i segnaposto valgono come termini
+# veri, altrimenti prova a "correggerli". Si elencano solo i segnaposto.
 try:
     import mask
 
     segnaposto = sorted({finto for _, finto in mask.load_pairs()})
-except Exception:  # noqa: BLE001 — una mappa rotta la segnala guard.py al primo comando
+except Exception:  # noqa: BLE001 — una mappa rotta la segnala guard.py al primo tool
     segnaposto = []
 if segnaposto:
     print(
-        "\n<!-- guardrail: mascheramento nomi di rete attivo -->\n"
-        f"Alcuni nomi di rete sono mascherati: nell'output di Bash compaiono come {', '.join(segnaposto)}. "
-        "Usali nei comandi come se fossero i nomi veri: guardrail li converte prima dell'esecuzione. "
-        "Non cercare di ricostruire gli originali. Il tool Read è negato sui file che li contengono: "
-        "leggili via Bash (cat, sed -n)."
+        "\n<!-- guardrail: mascheramento dei termini riservati attivo -->\n"
+        f"Alcuni termini riservati sono mascherati: in ogni risultato di tool (comandi, file letti, "
+        f"ricerche, MCP) compaiono come {', '.join(segnaposto)}. Trattali come i termini veri e usali "
+        "così nei comandi Bash, nei percorsi, nei pattern di Grep/Glob e in Write: guardrail li "
+        "converte prima dell'esecuzione. Non cercare di ricostruire gli originali, e non guardare i "
+        "byte (od, xxd, base64) per capire perché un testo non corrisponde. Il tool Edit non "
+        "riconosce i segnaposto: per modificare un testo che ne contiene usa sed via Bash. PDF, "
+        "documenti Office e archivi non si leggono con Read: convertili via Bash (pdftotext file -, "
+        "unzip -p). Per una risorsa privata usa curl via Bash, non WebFetch."
     )
+    # Il git status e i commit recenti entrano nel contesto prima di qualunque hook.
+    # Si ripete a ogni sessione finché resta così: è una fuga, non un consiglio.
+    impostazioni = {}
+    try:
+        with open(Path.home() / ".claude" / "settings.json", encoding="utf-8") as handle:
+            impostazioni = json.load(handle)
+    except (OSError, ValueError):
+        pass
+    if (
+        os.environ.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS") != "1"
+        and not (isinstance(impostazioni, dict) and impostazioni.get("includeGitInstructions") is False)
+    ):
+        print(
+            "\n<!-- guardrail: da segnalare all'utente nel primo messaggio -->\n"
+            "- il mascheramento è attivo, ma Claude Code mette nel contesto il git status e i commit "
+            "recenti prima di qualunque hook: nomi di file e messaggi di commit arrivano al modello "
+            'in chiaro. Si toglie con `"includeGitInstructions": false` in ~/.claude/settings.json.'
+        )
 
 STATE = Path.home() / ".claude" / "guardrail.state.json"
 

@@ -58,8 +58,8 @@ Cosa ottieni:
   `/guardrail:setup` (configura il repo corrente), `/guardrail:log` (cosa è stato
   bloccato, e perché), `/guardrail:approve` (approva uno script e ne registra
   l'impronta);
-- facoltativo, il mascheramento dei nomi di rete: si accende creando una mappa
-  (vedi [Mascheramento dei nomi di rete](#mascheramento-dei-nomi-di-rete)).
+- facoltativo, il mascheramento dei termini riservati: si accende creando una
+  mappa (vedi [Mascheramento dei termini riservati](#mascheramento-dei-termini-riservati)).
 
 Subito dopo l'installazione, in una sessione nuova:
 
@@ -144,39 +144,83 @@ Le liste si sommano con `~/.guardrail.json`, se esiste. `GUARDRAIL_CONFIG=<file>
 sostituisce entrambi (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
 scelta viene registrata nel log.
 
-## Mascheramento dei nomi di rete
+## Mascheramento dei termini riservati
 
-Per non mandare al modello i nomi degli host della propria rete (`nas-magazzino.lan`
-diventa `nas-sede1.lan`). Si attiva creando `~/.config/guardrail/mask.tsv`, fuori
-da ogni repo, **mai** in `.guardrail.json`, che nei progetti è tracciato:
+Per non mandare al modello termini che non devono uscire dalla macchina (nomi di
+host, di persone, di luoghi, di clienti), da qualunque parte emergano: l'output di
+un comando, un documento letto, un risultato di ricerca, la risposta di un server
+MCP. `nas-magazzino.lan` diventa `nas-sede1.lan`. Si attiva creando
+`~/.config/guardrail/mask.tsv`, fuori da ogni repo, **mai** in `.guardrail.json`,
+che nei progetti è tracciato:
 
 ```
-# nome-reale   segnaposto
-magazzino      sede1
+# termine-reale   segnaposto
+magazzino         sede1
 ```
 
-Una coppia per riga, separata da spazi o TAB. Il nome è sostituito solo come parola
-intera (`nas-magazzino` sì, `magazzinone` no), senza distinguere maiuscole e minuscole. Il
-segnaposto deve essere una parola che non compare altrove. Senza file, nessuna
+Una coppia per riga, separata da spazi o TAB. Il termine è sostituito solo come
+parola intera (`nas-magazzino` sì, `magazzinone` no), a prescindere dalle maiuscole,
+e il segnaposto ne conserva la forma (`MAGAZZINO` → `SEDE1`, `Magazzino` → `Sede1`).
+Il segnaposto deve essere una parola che non compare altrove. Senza file, nessuna
 differenza di comportamento.
 
-| Canale | Cosa succede |
-|---|---|
-| Bash | `guard.py` riscrive il comando perché passi da `hooks/mask.py run`: i segnaposto diventano nomi reali prima dell'esecuzione, i nomi reali tornano segnaposto nell'output (stdout e stderr uniti). Il comando riscritto contiene solo il testo del modello: la mappa la legge il runner |
-| Read | negato sui file che contengono un nome reale, e sulla mappa: vanno letti con `cat` via Bash |
-| Prompt | l'hook `UserPromptSubmit` blocca il prompt che contiene un nome reale: un hook non può riscriverlo |
-| Grep, Glob | **non coperti**: il loro output arriva al modello così com'è |
+Da impostare insieme, una volta per macchina, in `~/.claude/settings.json`:
 
-Le regole di `guard.py` valutano il comando con i nomi reali, quindi un
+```json
+{ "includeGitInstructions": false }
+```
+
+Senza, Claude Code mette nel contesto il git status e i commit recenti prima di
+qualunque hook, e un nome di file o un messaggio di commit arriva in chiaro.
+Finché manca, guardrail lo segnala a ogni sessione.
+
+**Verso il modello.** Il risultato di ogni tool passa dall'hook PostToolUse
+(`mask.py output`, campo `updatedToolOutput`): ogni stringa esce con i segnaposto.
+Il transcript salva la versione riscritta, quindi anche una sessione ripresa non
+rivede l'originale. Bash in più passa dal runner `mask.py run`, che maschera già in
+uscita: è l'unico modo di coprire un comando che fallisce, perché l'errore di un
+tool (PostToolUseFailure) non si può riscrivere.
+
+**Verso la macchina.** Il modello scrive segnaposto e i tool ricevono termini
+reali, tramite l'`updatedInput` di PreToolUse, che il modello non vede (verificato:
+lo stdout del hook resta nel transcript locale e non entra nel contesto).
+
+| Tool | Input: segnaposto → termine reale | Risultato |
+|---|---|---|
+| Bash | sì, dal runner a esecuzione: il comando riscritto contiene solo il testo del modello, perché la conferma e il classificatore della modalità auto (un modello) vedono l'input riscritto | mascherato, anche se il comando fallisce |
+| Read | il percorso, se il file reale esiste | mascherato. PDF, Office e archivi **negati**: il testo non è nei byte; via Bash `pdftotext file -` / `unzip -p` esce mascherato |
+| Grep, Glob | il pattern; il percorso se esiste | mascherato |
+| Write | il contenuto | mascherato |
+| Edit | **no**: Claude Code verifica `old_string` nel file prima dei hook, quindi un Edit col segnaposto fallisce da solo. Si modifica con `sed` via Bash, e l'avviso di sessione lo dice al modello | mascherato |
+| MCP | no: l'errore di un server può citare l'input | mascherato |
+| WebFetch | **negato** verso un indirizzo mascherato: la pagina la legge un modello prima di qualunque hook. Per una risorsa privata, `curl` via Bash | mascherato |
+| Agent, WebSearch | no: l'input va a un altro modello o a un motore di ricerca | mascherato |
+
+Negati anche, con la mappa attiva, i comandi che mostrano il testo trasformato
+(`od`, `xxd`, `hexdump`, `base64`, `rev`…): il filtro lavora sulle parole e lì non le
+riconosce. Nella prima prova reale un agente, per capire un Edit fallito, ha
+guardato i byte del file con `od -c` e ha letto il termine lettera per lettera.
+
+Il prompt che contiene un termine reale è bloccato dall'hook `UserPromptSubmit`: un
+hook non può riscriverlo, solo fermarlo.
+
+**Cosa non copre, e nessun hook può coprire:** il contenuto delle immagini
+(screenshot, foto); il contesto che Claude Code inietta da sé (CLAUDE.md, i file
+citati con `@`, il git status se `includeGitInstructions` resta acceso); una
+trasformazione del testo fatta apposta per aggirare il filtro. È una protezione
+contro l'esposizione accidentale, non contro un agente che la cerca.
+
+Le regole di `guard.py` valutano l'input con i termini reali, quindi un
 `prod_patterns` scritto sul nome vero continua a funzionare; motivi e log escono
 mascherati. Il mascheramento **non** segue `GUARDRAIL_DISABLE`: si spegne togliendo
-la mappa. Una mappa che esiste ma è illeggibile o incoerente blocca Bash e Read
-invece di lasciarli andare in chiaro.
+la mappa. Una mappa che esiste ma è illeggibile o incoerente blocca **ogni** tool,
+invece di lasciarne passare il risultato in chiaro.
 
-Costi della riscrittura: il comando gira in un `bash -c` separato, quindi un `cd`
-non sopravvive al comando successivo e le funzioni della shell di Claude Code non
-ci sono; le regole `allow` per prefisso delle settings non corrispondono più al
-comando riscritto, quindi le conferme aumentano.
+Costi: il comando Bash gira in un `bash -c` separato, quindi un `cd` non
+sopravvive al comando successivo e le funzioni della shell di Claude Code non ci
+sono; le regole `allow` per prefisso delle settings non corrispondono più al
+comando riscritto, quindi le conferme aumentano. Gli hook girano su ogni tool: con
+la mappa assente escono subito.
 
 ## Log
 
@@ -196,7 +240,7 @@ dello strumento. Solo prosa: nessun blocco automatico.
 ```
 python3 tests/run.py                  # casi del hook guard.py, deve restare verde
 python3 tests/test_session_start.py   # regole iniettate e avvisi una tantum
-python3 tests/test_mask.py            # mascheramento: comandi riscritti eseguiti davvero
+python3 tests/test_mask.py            # mascheramento: comandi eseguiti davvero, risultati riscritti
 ```
 
 I casi sono in `tests/cases.jsonl`: uno per riga, con l'esito atteso. Una regola
@@ -230,9 +274,9 @@ AGENTS.md                 indice e regole per ogni agente
 RULES-CORE.md             le 9 regole essenziali, iniettate a ogni sessione
 CLAUDE.md                 importa i due file sopra per Claude Code
 services/                 regole per tipologia di servizio
-hooks/guard.py            hook PreToolUse: allow / ask / deny
+hooks/guard.py            hook PreToolUse: allow / ask / deny, e input riscritto per il mascheramento
 hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md
-hooks/mask.py             mascheramento dei nomi di rete: runner e hook UserPromptSubmit
+hooks/mask.py             mascheramento dei termini riservati: runner, hook PostToolUse e UserPromptSubmit
 hooks/hooks.json          registrazione dei hook nel plugin
 skills/guardrail/         skill che carica il file di servizio giusto
 commands/check.md         /guardrail:check — il hook è attivo?
