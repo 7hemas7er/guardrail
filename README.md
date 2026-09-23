@@ -174,6 +174,37 @@ Senza, Claude Code mette nel contesto il git status e i commit recenti prima di
 qualunque hook, e un nome di file o un messaggio di commit arriva in chiaro.
 Finché manca, guardrail lo segnala a ogni sessione.
 
+### Attivarlo
+
+Serve guardrail 0.9.0 o successivo (vedi [Aggiornare](#aggiornare)).
+
+1. Crea la mappa, una coppia per riga (qui con `magazzino` come esempio):
+
+   ```
+   mkdir -p ~/.config/guardrail
+   printf 'magazzino\tsede1\n' >> ~/.config/guardrail/mask.tsv
+   ```
+
+   Scegli un segnaposto che non sia una parola già presente nei tuoi file: tutto
+   ciò che il modello scrive con quel segnaposto verrà convertito nel termine vero.
+
+2. In `~/.claude/settings.json` aggiungi `"includeGitInstructions": false`.
+
+3. Apri una **sessione nuova**: la mappa si legge a ogni tool, ma l'avviso che
+   spiega i segnaposto al modello entra solo all'avvio.
+
+Per verificare, scrivi nel prompt il termine vero: il prompt deve essere bloccato,
+con il suggerimento del segnaposto. Poi chiedi all'agente di leggere con `cat` un
+file che contiene il termine: nella risposta deve comparire il segnaposto.
+
+Per aggiungere un termine basta una riga nella mappa, senza riavviare; per
+spegnere il mascheramento si toglie il file. Una riga malformata ferma ogni tool
+finché non la correggi: è voluto, altrimenti i risultati passerebbero in chiaro.
+
+⚠️ I comandi che lanci tu con `!` nel prompt non passano dagli hook, e il loro
+output entra nella conversazione così com'è. Con il mascheramento attivo, quello
+che non deve arrivare al modello non va lanciato con `!`.
+
 **Verso il modello.** Il risultato di ogni tool passa dall'hook PostToolUse
 (`mask.py output`, campo `updatedToolOutput`): ogni stringa esce con i segnaposto.
 Il transcript salva la versione riscritta, quindi anche una sessione ripresa non
@@ -206,7 +237,8 @@ hook non può riscriverlo, solo fermarlo.
 
 **Cosa non copre, e nessun hook può coprire:** il contenuto delle immagini
 (screenshot, foto); il contesto che Claude Code inietta da sé (CLAUDE.md, i file
-citati con `@`, il git status se `includeGitInstructions` resta acceso); una
+citati con `@`, l'output dei comandi lanciati con `!`, il git status se
+`includeGitInstructions` resta acceso); una
 trasformazione del testo fatta apposta per aggirare il filtro. È una protezione
 contro l'esposizione accidentale, non contro un agente che la cerca.
 
