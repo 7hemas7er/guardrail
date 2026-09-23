@@ -8,7 +8,10 @@ sviluppatore mentre "studiava" uno script di deploy.
 
 ## Installazione su Claude Code (consigliata)
 
-Il repo è insieme un plugin e il proprio marketplace:
+Il repo è insieme un plugin e il proprio marketplace. Claude Code non scarica un
+pacchetto: **fa il clone git** del repo da GitHub, ramo `main`. Sulla macchina
+serve quindi `git`, e se il repo non è pubblico anche credenziali git valide per
+GitHub (`gh auth login` o una chiave SSH), altrimenti il clone fallisce.
 
 ```
 /plugin marketplace add 7hemas7er/guardrail
@@ -22,6 +25,27 @@ Da un clone locale, per provarlo o svilupparlo:
 /plugin install guardrail@7hemas7er-guardrail
 ```
 
+### Aggiornare
+
+Il plugin installato è una **copia**, in `~/.claude/plugins/cache/`, della
+versione presente al momento dell'installazione: un commit nuovo su GitHub non
+arriva da solo. Per riceverlo servono due passi, il pull del marketplace e poi
+l'aggiornamento del plugin:
+
+```
+/plugin marketplace update 7hemas7er-guardrail    # git pull del repo da GitHub
+/plugin update guardrail@7hemas7er-guardrail      # nuova copia nella cache
+```
+
+Poi una sessione nuova: i hook della sessione aperta restano quelli vecchi. Da un
+clone locale il pull lo fai tu (`git pull` nella cartella del clone), poi gli
+stessi due comandi.
+
+Chi pubblica una modifica deve **pushare su `main` e alzare la versione** in
+`.claude-plugin/plugin.json` e `.claude-plugin/marketplace.json`: senza push
+nessuno la riceve, e senza versione nuova l'aggiornamento non ha nulla da
+installare.
+
 Cosa ottieni:
 
 - a ogni sessione, le regole essenziali (`RULES-CORE.md`) entrano nel contesto;
@@ -33,7 +57,9 @@ Cosa ottieni:
 - quattro comandi: `/guardrail:check` (il hook è davvero attivo?),
   `/guardrail:setup` (configura il repo corrente), `/guardrail:log` (cosa è stato
   bloccato, e perché), `/guardrail:approve` (approva uno script e ne registra
-  l'impronta).
+  l'impronta);
+- facoltativo, il mascheramento dei nomi di rete: si accende creando una mappa
+  (vedi [Mascheramento dei nomi di rete](#mascheramento-dei-nomi-di-rete)).
 
 Subito dopo l'installazione, in una sessione nuova:
 
