@@ -23,6 +23,17 @@
 {"name": "lftp mirror --delete --dry-run: ok", "tool_name": "Bash", "tool_input": {"command": "lftp -e 'mirror --reverse --delete --dry-run ./public /www; bye' ftp.example"}, "expect": "allow"}
 {"name": "rsync --delete", "tool_name": "Bash", "tool_input": {"command": "rsync -a --delete build/ user@host:/srv/www/"}, "expect": "deny"}
 {"name": "rsync --delete -n: ok", "tool_name": "Bash", "tool_input": {"command": "rsync -an --delete build/ user@host:/srv/www/"}, "expect": "allow"}
+{"name": "falso positivo 2026-09-23: grep di rsync --delete nel repo: ok", "tool_name": "Bash", "tool_input": {"command": "grep -rlEc \"rsync.*--delete\" scripts/ deploy/"}, "expect": "allow"}
+{"name": "grep di un rsync --delete completo tra virgolette: ok", "tool_name": "Bash", "tool_input": {"command": "grep -rn 'rsync -a --delete build/' deploy/"}, "expect": "allow"}
+{"name": "grep di lftp mirror --delete: ok", "tool_name": "Bash", "tool_input": {"command": "grep -rn 'mirror --reverse --delete' deploy/"}, "expect": "allow"}
+{"name": "grep di git push --force: ok", "tool_name": "Bash", "tool_input": {"command": "grep -rn \"git push --force\" docs/"}, "expect": "allow"}
+{"name": "rsync --delete dietro timeout", "tool_name": "Bash", "tool_input": {"command": "timeout 60 rsync -a --delete build/ user@host:/srv/www/"}, "expect": "deny"}
+{"name": "rsync --delete con path assoluto", "tool_name": "Bash", "tool_input": {"command": "/usr/bin/rsync -a --delete build/ user@host:/srv/www/"}, "expect": "deny"}
+{"name": "rsync --delete da find -exec: lo ferma prima la regola di find", "tool_name": "Bash", "tool_input": {"command": "find . -maxdepth 0 -exec rsync -a --delete build/ user@host:/srv/www/ \\;"}, "expect": "ask"}
+{"name": "rsync --delete in una sostituzione tra virgolette", "tool_name": "Bash", "tool_input": {"command": "out=\"$(rsync -a --delete build/ user@host:/srv/www/)\""}, "expect": "deny"}
+{"name": "rsync --delete dentro bash -c", "tool_name": "Bash", "tool_input": {"command": "bash -c \"rsync -a --delete build/ user@host:/srv/www/\""}, "expect": "deny"}
+{"name": "grep innocuo poi rsync --delete vero", "tool_name": "Bash", "tool_input": {"command": "grep -q \"x\" deploy.sh && rsync -a --delete build/ user@host:/srv/www/"}, "expect": "deny"}
+{"name": "git push --force dietro timeout", "tool_name": "Bash", "tool_input": {"command": "timeout 30 git push --force origin main"}, "expect": "deny"}
 {"name": "git push --force", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}, "expect": "deny"}
 {"name": "git push -f", "tool_name": "Bash", "tool_input": {"command": "git push -f"}, "expect": "deny"}
 {"name": "git push --force-with-lease", "tool_name": "Bash", "tool_input": {"command": "git push --force-with-lease origin feat/x"}, "expect": "ask"}

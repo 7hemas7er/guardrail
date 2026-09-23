@@ -821,31 +821,37 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
         deny("codice decodificato o costruito al volo e passato a sh: illeggibile per chi controlla. Scrivilo in un file, poi esegui.")
 
+    # Le regole che seguono sono regex sul testo: valgono solo se il programma
+    # compare come parola, non dentro il pattern di un grep. `mirror` è un comando
+    # di lftp e vive dentro la stringa di `-e`: conta la parola lftp.
+    words = shell_words(text)
+
     # Deploy con cancellazione sul bersaglio
-    if re.search(r"\bmirror\b[^;|]*--delete\b", text) and not re.search(r"\bmirror\b[^;|]*--dry-run\b", text):
+    if "lftp" in words and re.search(r"\bmirror\b[^;|]*--delete\b", text) and not re.search(r"\bmirror\b[^;|]*--dry-run\b", text):
         deny("lftp mirror --delete senza --dry-run: cancella sul server remoto tutto ciò che manca in locale. (guardrail: deploy-infrastruttura.md)")
-    if re.search(r"\brsync\b[^;|]*--delete", text) and not re.search(r"\brsync\b[^;|]*(\s--dry-run\b|\s-[a-zA-Z]*n[a-zA-Z]*\b)", text):
+    if "rsync" in words and re.search(r"\brsync\b[^;|]*--delete", text) and not re.search(r"\brsync\b[^;|]*(\s--dry-run\b|\s-[a-zA-Z]*n[a-zA-Z]*\b)", text):
         deny("rsync --delete senza --dry-run / -n: cancella sul bersaglio. Prima il dry-run, poi l'utente decide.")
 
     # Git
-    if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--force(?!-with-lease)\b|\s-f\b|\s\+\S+)", text):
-        deny("git push --force: riscrive la storia condivisa. Mai. Se serve, --force-with-lease su un branch personale, con conferma.")
-    if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*--force-with-lease", text):
-        ask("git push --force-with-lease: accettabile solo su un branch personale. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--delete\b|\s-d\b|\s:\S)", text):
-        ask("git push --delete: cancella un branch o un tag sul remoto, per tutti. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*[xX]", text):
-        deny("git clean -x/-X: cancella anche i file ignorati, cioè .env e le credenziali locali.")
-    if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*f", text):
-        ask("git clean -f: cancella file non tracciati, non recuperabili. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\breset\s+--hard\b", text):
-        ask("git reset --hard: scarta modifiche non committate. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\b(checkout|restore)\s+(--\s+)?\.(\s|$)", text):
-        ask("git checkout/restore .: scarta tutte le modifiche locali. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\bbranch\b[^;|]*\s-D\b", text):
-        ask("git branch -D: cancella un branch anche se non è stato mergiato. Conferma?")
-    if re.search(r"\bgit\b[^;|]*\bstash\s+(drop|clear)\b", text):
-        ask("git stash drop/clear: lavoro accantonato che sparisce. Conferma?")
+    if "git" in words:
+        if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--force(?!-with-lease)\b|\s-f\b|\s\+\S+)", text):
+            deny("git push --force: riscrive la storia condivisa. Mai. Se serve, --force-with-lease su un branch personale, con conferma.")
+        if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*--force-with-lease", text):
+            ask("git push --force-with-lease: accettabile solo su un branch personale. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--delete\b|\s-d\b|\s:\S)", text):
+            ask("git push --delete: cancella un branch o un tag sul remoto, per tutti. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*[xX]", text):
+            deny("git clean -x/-X: cancella anche i file ignorati, cioè .env e le credenziali locali.")
+        if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*f", text):
+            ask("git clean -f: cancella file non tracciati, non recuperabili. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\breset\s+--hard\b", text):
+            ask("git reset --hard: scarta modifiche non committate. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\b(checkout|restore)\s+(--\s+)?\.(\s|$)", text):
+            ask("git checkout/restore .: scarta tutte le modifiche locali. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\bbranch\b[^;|]*\s-D\b", text):
+            ask("git branch -D: cancella un branch anche se non è stato mergiato. Conferma?")
+        if re.search(r"\bgit\b[^;|]*\bstash\s+(drop|clear)\b", text):
+            ask("git stash drop/clear: lavoro accantonato che sparisce. Conferma?")
 
     # Laravel: comandi che distruggono lo schema
     if re.search(r"\bartisan\s+(migrate:fresh|db:wipe|migrate:reset)\b", text):
@@ -935,6 +941,30 @@ def invoked_commands(text: str) -> frozenset[str]:
     except ValueError:
         return frozenset(re.findall(r"[\w.-]+", text))
     return frozenset(names)
+
+
+def shell_words(text: str) -> frozenset[str]:
+    """Le parole che il testo contiene *come parole*, in qualunque posizione.
+
+    Più largo di `invoked_commands`: `timeout 60 rsync …` e `find … -exec rsync …`
+    eseguono rsync senza metterlo in testa al comando, e qui contano. Più stretto
+    del testo grezzo: in `grep -rlE "rsync.*--delete" scripts/` la parola rsync non
+    c'è, c'è il pattern `rsync.*--delete`, che non sincronizza niente. È il falso
+    positivo del 2026-09-23, durante /guardrail:setup.
+
+    Una sostituzione di comando (`$(…)`, backtick) esegue anche dentro le
+    virgolette doppie, e le virgolette spaiate non si leggono: in quei casi si
+    torna a tutte le parole del testo, che sbaglia per eccesso di prudenza.
+    """
+    if "$(" in text or "`" in text:
+        return frozenset(re.findall(r"[\w.-]+", text))
+    lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return frozenset(os.path.basename(token) for token in lexer)
+    except ValueError:
+        return frozenset(re.findall(r"[\w.-]+", text))
 
 
 # Il bersaglio di una connessione, e solo quello. Serve a distinguere
