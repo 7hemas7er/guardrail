@@ -1,139 +1,131 @@
 # guardrail
 
-Regole aziendali per gli agenti di sviluppo, in due forme: **prosa** che ogni
-agente legge (`AGENTS.md`, `services/`) e **hook** che su Claude Code bloccano o
-mettono in conferma i comandi pericolosi (`hooks/`). Nato dall'incidente del
-2026-09-11, in cui un subagent in modalità auto ha cancellato la home di uno
-sviluppatore mentre "studiava" uno script di deploy.
+Company rules for coding agents, in two forms: **prose** that every agent reads
+(`AGENTS.md`, `services/`) and **hooks** that, in Claude Code, block dangerous
+commands or ask for confirmation (`hooks/`). It was born from the 2026-09-11
+incident, in which a subagent in auto mode deleted a developer's home directory
+while "studying" a deploy script.
 
-## Installazione su Claude Code (consigliata)
+## Installing in Claude Code (recommended)
 
-Il repo è insieme un plugin e il proprio marketplace. Claude Code non scarica un
-pacchetto: **fa il clone git** del repo da GitHub, ramo `main`. Sulla macchina
-serve quindi `git`, e se il repo non è pubblico anche credenziali git valide per
-GitHub (`gh auth login` o una chiave SSH), altrimenti il clone fallisce.
+The repo is both a plugin and its own marketplace. Claude Code does not download
+a package: it **git-clones** the repo from GitHub, branch `main`. The machine
+therefore needs `git`, and, if the repo is not public, valid git credentials for
+GitHub (`gh auth login` or an SSH key); otherwise the clone fails.
 
 ```
 /plugin marketplace add 7hemas7er/guardrail
 /plugin install guardrail@7hemas7er-guardrail
 ```
 
-Da un clone locale, per provarlo o svilupparlo:
+From a local clone, to try it out or develop it:
 
 ```
-/plugin marketplace add /percorso/di/guardrail
+/plugin marketplace add /path/to/guardrail
 /plugin install guardrail@7hemas7er-guardrail
 ```
 
-### Aggiornare
+### Updating
 
-Il plugin installato è una **copia**, in `~/.claude/plugins/cache/`, della
-versione presente al momento dell'installazione: un commit nuovo su GitHub non
-arriva da solo. Per riceverlo servono due passi, il pull del marketplace e poi
-l'aggiornamento del plugin:
+The installed plugin is a **copy**, in `~/.claude/plugins/cache/`, of the version
+that existed at install time: a new commit on GitHub does not arrive by itself.
+Two steps bring it in, pulling the marketplace and then updating the plugin:
 
 ```
-/plugin marketplace update 7hemas7er-guardrail    # git pull del repo da GitHub
-/plugin update guardrail@7hemas7er-guardrail      # nuova copia nella cache
+/plugin marketplace update 7hemas7er-guardrail    # git pull of the repo from GitHub
+/plugin update guardrail@7hemas7er-guardrail      # fresh copy in the cache
 ```
 
-Poi una sessione nuova: i hook della sessione aperta restano quelli vecchi. Da un
-clone locale il pull lo fai tu (`git pull` nella cartella del clone), poi gli
-stessi due comandi.
+Then start a new session: the open session keeps the old hooks. From a local
+clone you pull yourself (`git pull` in the clone), then run the same two commands.
 
-Chi pubblica una modifica deve **pushare su `main` e alzare la versione** in
-`.claude-plugin/plugin.json` e `.claude-plugin/marketplace.json`: senza push
-nessuno la riceve, e senza versione nuova l'aggiornamento non ha nulla da
-installare.
+Whoever publishes a change must **push to `main` and bump the version** in
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`: without the
+push nobody receives it, and without a new version the update has nothing to
+install.
 
-Il plugin si installa una volta per macchina, ma **si accende per progetto**: dove
-non lo attivi non controlla niente e non aggiunge niente al contesto (vedi
-[Attivarlo per progetto](#attivarlo-per-progetto)).
+### What you get
 
-Cosa ottieni, in ogni progetto attivo:
+The plugin is installed once per machine, but **switched on per project**: where
+you don't turn it on, it checks nothing and adds nothing to the context. In every
+active project:
 
-- a ogni sessione, le regole essenziali (`RULES-CORE.md`) entrano nel contesto;
-- ogni comando Bash, lettura e scrittura di file e query MCP passa dal hook
-  `guard.py`: esito `allow`, `ask` (conferma — ma in modalità auto la concede
-  l'agente, non l'utente) o `deny` (blocco con spiegazione all'agente, e l'unico
-  esito che la modalità auto non può scavalcare);
-- la skill `guardrail`, che carica le regole del servizio interessato;
-- quattro comandi: `/guardrail:check` (il hook è davvero attivo?),
-  `/guardrail:setup` (attiva e configura il repo corrente), `/guardrail:log` (cosa
-  è stato bloccato, e perché), `/guardrail:approve` (approva uno script e ne
-  registra l'impronta);
-- facoltativo, il mascheramento dei termini riservati: si accende creando una
-  mappa, e vale in ogni cartella, attiva o no (vedi [Mascheramento dei termini
-  riservati](#mascheramento-dei-termini-riservati)).
+- at every session, the core rules (`RULES-CORE.md`) enter the context;
+- every Bash command, file read and write, and MCP query goes through the
+  `guard.py` hook, with outcome `allow`, `ask` (confirmation — but in auto mode
+  the agent grants it, not the user) or `deny` (a block explained to the agent,
+  and the only outcome auto mode cannot override);
+- the `guardrail` skill, which loads the rules for the service at hand;
+- four commands: `/guardrail:check` (is the hook really running?),
+  `/guardrail:setup` (turn on and configure the current repo), `/guardrail:log`
+  (what was blocked, and why), `/guardrail:approve` (approve a script and record
+  its fingerprint);
+- optionally, masking of reserved terms: it is turned on by creating a map, and
+  applies in every folder, active or not (see [Masking](#masking-reserved-terms)).
 
-Dopo l'installazione, in una sessione nuova aperta nel progetto da proteggere:
+### First steps
+
+In a new session opened in the project you want to protect:
 
 ```
 /guardrail:setup
 ```
 
-L'agente guarda `.mcp.json`, gli script di deploy e la CI, deduce quali server e
-host sono produzione, e ti propone il `.guardrail.json` da committare. Non scrive
-niente senza mostrartelo. È quel file ad accendere guardrail nel progetto.
-
-Poi verifica:
+The agent looks at `.mcp.json`, the deploy scripts and the CI, works out which
+servers and hosts are production, and proposes the `.guardrail.json` to commit.
+It writes nothing without showing it to you. That file is what turns guardrail on
+in the project. Then check:
 
 ```
 /guardrail:check
 ```
 
-Lancia tre azioni innocue che il hook deve fermare e ti dice se lo ha fatto. Un
-hook che non parte non fa rumore: senza questa verifica non sai di non essere
-protetto.
+It runs three harmless actions the hook must stop and tells you whether it did. A
+hook that doesn't start makes no noise: without this check you don't know you
+are unprotected.
 
-Resta una sola cosa da fare a mano, una volta per macchina: accendere il sandbox
-in `~/.claude/settings.json` (vedi `examples/settings.example.json`). È l'unica
-protezione che nessun hook può attivare al posto tuo. Se manca, guardrail te lo
-segnala all'inizio della prima sessione in un progetto attivo.
+One thing remains to do by hand, once per machine: turn on the sandbox in
+`~/.claude/settings.json` (see `examples/settings.example.json`). It is the only
+protection no hook can switch on for you. If it is off, guardrail tells you at
+the start of the first session in an active project.
 
-## Attivarlo per progetto
+## Turning it on per project
 
-Guardrail è acceso dove c'è un `.guardrail.json`: nella root del progetto, oppure
-in una directory superiore, che così lo accende per tutti i progetti sotto di sé
-(`~/repos/cliente/.guardrail.json` vale per ogni repo del cliente). Fa eccezione
-`~/.guardrail.json`: contiene le liste comuni a tutti i progetti attivi, e da solo
-non accende niente, altrimenti varrebbe per ogni cartella della home.
+Guardrail is on wherever there is a `.guardrail.json`: in the project root, or in
+a parent directory, which turns it on for every project below it
+(`~/repos/client/.guardrail.json` covers every repo of that client). The
+exception is `~/.guardrail.json`: it holds the lists shared by all active
+projects and turns nothing on by itself, otherwise it would cover every folder in
+the home directory.
 
-| Vuoi… | Fai |
+| You want to… | Do this |
 |---|---|
-| accenderlo con la configurazione giusta | `/guardrail:setup` |
-| accenderlo con le sole regole di base | un `.guardrail.json` con `{}` nella root |
-| accenderlo solo per te, non per i colleghi | come sopra, e il file in `.git/info/exclude` invece che nel commit |
-| spegnerlo | togli tu il `.guardrail.json`: l'agente non può |
+| turn it on with the right configuration | `/guardrail:setup` |
+| turn it on with the basic rules only | a `.guardrail.json` containing `{}` in the root |
+| turn it on for yourself only, not your colleagues | as above, with the file in `.git/info/exclude` instead of the commit |
+| turn it off | remove `.guardrail.json` yourself: the agent cannot |
 
-Quando Claude parte in una cartella senza `.guardrail.json`, alla prima richiesta
-l'agente ti chiede se attivarlo, prima di fare altro, citando `.mcp.json`,
-`docker-compose` o `scripts/deploy` se ci sono: **sì, configuralo**
-(`/guardrail:setup`), **sì, regole di base** (un `.guardrail.json` con `{}`) o
-**no**. La domanda non si ripete per quella cartella: è una scelta, non una
-dimenticanza da ricordarti ogni volta. Lo stato degli avvisi sta in `~/.claude/guardrail.state.json`;
-togliere la voce `inattivo:<cartella>` lo fa ricomparire.
+When Claude starts in a folder without `.guardrail.json`, at the first request
+the agent asks you whether to turn it on, before doing anything else, mentioning
+`.mcp.json`, `docker-compose` or `scripts/deploy` if present: **yes, configure
+it** (`/guardrail:setup`), **yes, basic rules** (a `.guardrail.json` with `{}`)
+or **no**. The question is not repeated for that folder: it is a choice, not an
+oversight to remind you of every time. The state lives in
+`~/.claude/guardrail.state.json`; removing the `inattivo:<folder>` entry brings
+the question back.
 
-Vale il progetto da cui è partita la sessione e la directory di lavoro del
-comando: basta che una delle due sia attiva, quindi un `cd` fuori dal progetto non
-spegne niente. Togliere `.guardrail.json` (`rm`, `mv`, `git rm`) è bloccato: è il
-modo di spegnere guardrail, e quella decisione resta all'utente.
+What counts is the project the session started from and the command's working
+directory: either one being active is enough, so a `cd` out of the project turns
+nothing off. Removing `.guardrail.json` is blocked, and where guardrail is off it
+still keeps the rules that protect itself; details in
+[docs/configuration.md](docs/configuration.md#self-protection).
 
-Dove è spento, guardrail tiene comunque le regole che proteggono sé stesso: la
-rimozione di un `.guardrail.json` (bloccata, anche con `find … -delete` o dentro
-uno script lanciato), le scritture su un `.guardrail.json` o su `~/.guardrail.json`
-e sulle impostazioni di Claude Code, della home o del `.claude/` di un progetto (in
-conferma), sul codice dei plugin in `~/.claude/plugins` (bloccate). Un link o una
-directory al posto di `.guardrail.json` lo lasciano acceso. Altrimenti una sessione
-aperta in una cartella qualunque potrebbe spegnerlo, o allentarlo con un
-`allow_commands` in `~/.guardrail.json`, nei progetti dove è acceso.
+⚠️ Up to 0.9.x guardrail was on everywhere. After updating, projects without a
+`.guardrail.json` stay unprotected until you add one.
 
-⚠️ Fino alla 0.9.x guardrail era acceso ovunque. Dopo l'aggiornamento, i progetti
-senza `.guardrail.json` restano scoperti finché non lo aggiungi.
+## Per-project configuration
 
-## Configurazione per progetto
-
-Metti `.guardrail.json` nella root del repo. Esempio completo in
+Put `.guardrail.json` in the repo root. Full example in
 `examples/esempio.guardrail.json`:
 
 ```json
@@ -146,224 +138,82 @@ Metti `.guardrail.json` nella root del repo. Esempio completo in
 }
 ```
 
-| Chiave | Significato |
+| Key | Meaning |
 |---|---|
-| `prod_mcp_servers` | nomi esatti di server MCP che sono produzione: scritture bloccate |
-| `ask_mcp_servers` | server condivisi: scritture in conferma |
-| `prod_patterns` | regex che marcano come produzione un comando `psql`/`mysql`/`pg_restore`, un nome di server MCP, o i parametri di una chiamata MCP (es. il resource group di Azure) |
-| `deny_commands` | regex sul comando Bash: blocco secco |
-| `ask_commands` | regex sul comando Bash: conferma |
-| `allow_commands` | regex che esentano un comando da tutte le regole (usare con parsimonia, motivare nel commit) |
-| `allow_scripts` | script già letti e approvati: `{"path": regex, "sha256": impronta}`. Esentano **solo** la scansione del contenuto, e solo finché il contenuto resta quello |
+| `prod_mcp_servers` | exact names of MCP servers that are production: writes blocked |
+| `ask_mcp_servers` | shared servers: writes need confirmation |
+| `prod_patterns` | regexes that mark as production a `psql`/`mysql`/`pg_restore` command, an MCP server name, or the parameters of an MCP call (e.g. the Azure resource group) |
+| `deny_commands` | regexes on the Bash command: hard block |
+| `ask_commands` | regexes on the Bash command: confirmation |
+| `allow_commands` | regexes that exempt a command from all rules (use sparingly, justify in the commit) |
+| `allow_scripts` | scripts already read and approved: `{"path": regex, "sha256": fingerprint}`. They exempt **only** the content scan, and only while the content stays the same |
 
-### Script già letti: `allow_scripts`
+Approved scripts, shared lists in `~/.guardrail.json` and the environment
+variables (`GUARDRAIL_CONFIG`, `GUARDRAIL_DISABLE`) are described in
+[docs/configuration.md](docs/configuration.md).
 
-Ogni script invocato viene letto dal hook, e se contiene un comando che sarebbe
-bloccato l'esito è una conferma. Su uno script di build lanciato venti volte al
-giorno quella conferma diventa rumore, e il rumore insegna ad approvare senza
-leggere. `allow_scripts` la toglie, ma lega l'esenzione al **contenuto**:
+## Masking reserved terms
 
-```json
-"allow_scripts": [
-  {"path": "scripts/build\\.sh", "sha256": "625f88e4…"}
-]
-```
-
-```
-/guardrail:approve scripts/build.sh    # legge, mostra, registra l'impronta
-sha256sum scripts/build.sh             # se preferisci farlo a mano
-```
-
-Senza argomenti, `/guardrail:approve` controlla le approvazioni esistenti e dice
-quali impronte sono scadute, incomplete o orfane.
-
-Se lo script cambia, l'impronta non corrisponde più: torna la conferma, con un
-avviso che dice che il contenuto non è quello approvato. Una voce senza `sha256`
-non esenta niente — «mi fido di questo file per sempre» non è una cosa che questo
-repo sa dire. `deny_commands` vince comunque: un comando vietato resta vietato
-anche dentro uno script approvato, e l'esenzione vale solo per la scansione del
-contenuto, non per il comando che lo lancia (`rm -rf "$X" && bash build.sh`
-resta bloccato).
-
-Le liste si sommano con `~/.guardrail.json`, se esiste, che però non accende
-guardrail da solo (vedi sopra). `GUARDRAIL_CONFIG=<file>` sostituisce entrambi e
-accende guardrail ovunque (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
-scelta viene registrata nel log.
-
-## Mascheramento dei termini riservati
-
-Per non mandare al modello termini che non devono uscire dalla macchina (nomi di
-host, di persone, di luoghi, di clienti), da qualunque parte emergano: l'output di
-un comando, un documento letto, un risultato di ricerca, la risposta di un server
-MCP. `nas-magazzino.lan` diventa `nas-sede1.lan`. Si attiva creando
-`~/.config/guardrail/mask.tsv`, fuori da ogni repo, **mai** in `.guardrail.json`,
-che nei progetti è tracciato:
+Keeps terms that must not leave the machine (host, people, place and client
+names) away from the model, wherever they come from: command output, a document
+read, a search result, an MCP server reply. `nas-warehouse.lan` becomes
+`nas-site1.lan`. It is turned on by creating `~/.config/guardrail/mask.tsv`,
+outside any repo, **never** in `.guardrail.json`, which is tracked in projects:
 
 ```
-# termine-reale   segnaposto
-magazzino         sede1
+# real-term   placeholder
+warehouse     site1
 ```
 
-Una coppia per riga, separata da spazi o TAB. Il termine è sostituito solo come
-parola intera (`nas-magazzino` sì, `magazzinone` no), a prescindere dalle maiuscole,
-e il segnaposto ne conserva la forma (`MAGAZZINO` → `SEDE1`, `Magazzino` → `Sede1`).
-Il segnaposto deve essere una parola che non compare altrove. Senza file, nessuna
-differenza di comportamento.
-
-Da impostare insieme, una volta per macchina, in `~/.claude/settings.json`:
-
-```json
-{ "includeGitInstructions": false }
-```
-
-Senza, Claude Code mette nel contesto il git status e i commit recenti prima di
-qualunque hook, e un nome di file o un messaggio di commit arriva in chiaro.
-Finché manca, guardrail lo segnala a ogni sessione.
-
-### Attivarlo
-
-Serve guardrail 0.9.0 o successivo (vedi [Aggiornare](#aggiornare)).
-
-1. Crea la mappa, una coppia per riga (qui con `magazzino` come esempio):
-
-   ```
-   mkdir -p ~/.config/guardrail
-   printf 'magazzino\tsede1\n' >> ~/.config/guardrail/mask.tsv
-   ```
-
-   Scegli un segnaposto che non sia una parola già presente nei tuoi file: tutto
-   ciò che il modello scrive con quel segnaposto verrà convertito nel termine vero.
-
-2. In `~/.claude/settings.json` aggiungi `"includeGitInstructions": false`.
-
-3. Apri una **sessione nuova**: la mappa si legge a ogni tool, ma l'avviso che
-   spiega i segnaposto al modello entra solo all'avvio.
-
-Per verificare, scrivi nel prompt il termine vero: il prompt deve essere bloccato,
-con il suggerimento del segnaposto. Poi chiedi all'agente di leggere con `cat` un
-file che contiene il termine: nella risposta deve comparire il segnaposto.
-
-Per aggiungere un termine basta una riga nella mappa, senza riavviare; per
-spegnere il mascheramento si toglie il file. Una riga malformata ferma ogni tool
-finché non la correggi: è voluto, altrimenti i risultati passerebbero in chiaro.
-
-⚠️ I comandi che lanci tu con `!` nel prompt non passano dagli hook, e il loro
-output entra nella conversazione così com'è. Con il mascheramento attivo, quello
-che non deve arrivare al modello non va lanciato con `!`.
-
-**Verso il modello.** Il risultato di ogni tool passa dall'hook PostToolUse
-(`mask.py output`, campo `updatedToolOutput`): ogni stringa esce con i segnaposto.
-Il transcript salva la versione riscritta, quindi anche una sessione ripresa non
-rivede l'originale. Bash in più passa dal runner `mask.py run`, che maschera già in
-uscita: è l'unico modo di coprire un comando che fallisce, perché l'errore di un
-tool (PostToolUseFailure) non si può riscrivere.
-
-**Verso la macchina.** Il modello scrive segnaposto e i tool ricevono termini
-reali, tramite l'`updatedInput` di PreToolUse, che il modello non vede (verificato:
-lo stdout del hook resta nel transcript locale e non entra nel contesto).
-
-| Tool | Input: segnaposto → termine reale | Risultato |
-|---|---|---|
-| Bash | sì, dal runner a esecuzione: il comando riscritto contiene solo il testo del modello, perché la conferma e il classificatore della modalità auto (un modello) vedono l'input riscritto | mascherato, anche se il comando fallisce |
-| Read | il percorso, se il file reale esiste | mascherato. PDF, Office e archivi **negati**: il testo non è nei byte; via Bash `pdftotext file -` / `unzip -p` esce mascherato |
-| Grep, Glob | il pattern; il percorso se esiste | mascherato |
-| Write | il contenuto | mascherato |
-| Edit | **no**: Claude Code verifica `old_string` nel file prima dei hook, quindi un Edit col segnaposto fallisce da solo. Si modifica con `sed` via Bash, e l'avviso di sessione lo dice al modello | mascherato |
-| MCP | no: l'errore di un server può citare l'input | mascherato |
-| WebFetch | **negato** verso un indirizzo mascherato: la pagina la legge un modello prima di qualunque hook. Per una risorsa privata, `curl` via Bash | mascherato |
-| Agent, WebSearch | no: l'input va a un altro modello o a un motore di ricerca | mascherato |
-
-Negati anche, con la mappa attiva, i comandi che mostrano il testo trasformato
-(`od`, `xxd`, `hexdump`, `base64`, `rev`…): il filtro lavora sulle parole e lì non le
-riconosce. Nella prima prova reale un agente, per capire un Edit fallito, ha
-guardato i byte del file con `od -c` e ha letto il termine lettera per lettera.
-
-Il prompt che contiene un termine reale è bloccato dall'hook `UserPromptSubmit`: un
-hook non può riscriverlo, solo fermarlo.
-
-**Cosa non copre, e nessun hook può coprire:** il contenuto delle immagini
-(screenshot, foto); il contesto che Claude Code inietta da sé (CLAUDE.md, i file
-citati con `@`, l'output dei comandi lanciati con `!`, il git status se
-`includeGitInstructions` resta acceso); una
-trasformazione del testo fatta apposta per aggirare il filtro. È una protezione
-contro l'esposizione accidentale, non contro un agente che la cerca.
-
-Le regole di `guard.py` valutano l'input con i termini reali, quindi un
-`prod_patterns` scritto sul nome vero continua a funzionare; motivi e log escono
-mascherati. Il mascheramento **non** segue `GUARDRAIL_DISABLE`: si spegne togliendo
-la mappa. Una mappa che esiste ma è illeggibile o incoerente blocca **ogni** tool,
-invece di lasciarne passare il risultato in chiaro.
-
-Costi: il comando Bash gira in un `bash -c` separato, quindi un `cd` non
-sopravvive al comando successivo e le funzioni della shell di Claude Code non ci
-sono; le regole `allow` per prefisso delle settings non corrispondono più al
-comando riscritto, quindi le conferme aumentano. Gli hook girano su ogni tool: con
-la mappa assente escono subito.
+Without the file, nothing changes. Setup, what it covers per tool, and what no
+hook can cover are in [docs/masking.md](docs/masking.md).
 
 ## Log
 
-Ogni `deny` e `ask` finisce in `~/.claude/guardrail.log.jsonl` con tool, cwd,
-sessione e motivo. Serve a capire cosa gli agenti provano a fare, e a correggere
-i falsi positivi con una regola migliore invece che con `GUARDRAIL_DISABLE`.
-`/guardrail:log` lo riassume per regola e segnala i tentativi di aggiramento
-(stessa sessione, stessa azione riprovata in forma diversa).
+Every `deny` and `ask` goes to `~/.claude/guardrail.log.jsonl` with tool, cwd,
+session and reason. It shows what agents try to do, and helps fix false positives
+with a better rule instead of `GUARDRAIL_DISABLE`. `/guardrail:log` summarizes it
+by rule and flags workaround attempts (same session, same action retried in a
+different form).
 
-## Altri strumenti (Copilot, Cursor, Codex, Gemini)
+## Other tools (Copilot, Cursor, Codex, Gemini)
 
-Clona il repo accanto ai progetti e importa `AGENTS.md` nel file di istruzioni
-dello strumento. Solo prosa: nessun blocco automatico.
+Clone the repo next to your projects and import `AGENTS.md` into the tool's
+instruction file. Prose only: no automatic blocking.
 
-## Sviluppo
-
-```
-python3 tests/run.py                  # casi del hook guard.py, deve restare verde
-python3 tests/test_attivazione.py     # acceso solo dove c'è .guardrail.json
-python3 tests/test_session_start.py   # regole iniettate e avvisi una tantum
-python3 tests/test_mask.py            # mascheramento: comandi eseguiti davvero, risultati riscritti
-```
-
-I casi sono in `tests/cases.jsonl`: uno per riga, con l'esito atteso. Una regola
-nuova arriva con il suo caso e con il motivo (l'incidente o il quasi-incidente)
-nel file di servizio corrispondente. Un caso può aggiungere
-`"config": ".guardrail.json"` per essere valutato con la configurazione di questo
-repo invece della fixture: è così che si verificano le proprie `deny_commands`,
-che altrimenti bloccherebbero il comando stesso che prova a verificarle. Con
-`"mask_map"` il caso gira con una mappa di mascheramento; senza, con la mappa
-assente, così quella della macchina non cambia gli esiti. Gli script in `tests/fixtures/` servono ai
-casi che verificano la scansione degli script invocati: non vanno eseguiti.
-
-Per scrivere file che *citano* comandi pericolosi (documentazione, casi di test)
-usa gli strumenti di modifica file dell'agente: un heredoc che alimenta un
-interprete (`bash <<EOF`) viene letto come comandi, uno che scrive su file
-(`cat > x <<EOF`) come dati.
-
-**Il hook che ti blocca mentre sviluppi è quello installato, non quello che stai
-scrivendo.** Claude Code esegue la copia in
-`~/.claude/plugins/cache/<marketplace>/guardrail/<versione>/hooks/guard.py`: una
-correzione nel repo non ha effetto finché non aggiorni il plugin, e il codice del
-plugin non si modifica a mano. Quindi si lavora sotto la versione precedente —
-comodo per accorgersi dei falsi positivi, scomodo quando è proprio quello che
-stai correggendo a bloccarti. In quel caso: usa `Edit`/`Write` sul repo, e
-verifica con `python3 tests/run.py`, che gira sul `guard.py` locale.
-
-## Struttura
+## Development
 
 ```
-AGENTS.md                 indice e regole per ogni agente
-RULES-CORE.md             le 9 regole essenziali, iniettate a ogni sessione nei progetti attivi
-CLAUDE.md                 importa i due file sopra per Claude Code
-services/                 regole per tipologia di servizio
-hooks/guard.py            hook PreToolUse: allow / ask / deny, e input riscritto per il mascheramento
-hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md nei progetti attivi, avvisa negli altri
-hooks/mask.py             mascheramento dei termini riservati: runner, hook PostToolUse e UserPromptSubmit
-hooks/hooks.json          registrazione dei hook nel plugin
-skills/guardrail/         skill che carica il file di servizio giusto
-commands/check.md         /guardrail:check — il hook è attivo?
-commands/setup.md         /guardrail:setup — configura il repo corrente
-commands/log.md           /guardrail:log — riassume i blocchi recenti
-commands/approve.md       /guardrail:approve — approva uno script, registra l'impronta
-examples/                 .guardrail.json d'esempio, settings consigliati,
-                          clone-prod-to-local.sh di riferimento
-tests/                    casi, runner, fixture di script, test di session-start
-.claude-plugin/           manifest del plugin e del marketplace
+python3 tests/run.py                  # guard.py hook cases, must stay green
+python3 tests/test_attivazione.py     # on only where .guardrail.json exists
+python3 tests/test_session_start.py   # injected rules and one-time notices
+python3 tests/test_mask.py            # masking: real commands, rewritten results
+```
+
+A new rule comes with its test case and with the reason (the incident or near
+miss) in the matching service file. How the cases work, and why the hook that
+blocks you while developing may not be the one you are writing, is in
+[docs/development.md](docs/development.md).
+
+## Layout
+
+```
+AGENTS.md                 index and rules for every agent
+RULES-CORE.md             the 9 core rules, injected at every session in active projects
+CLAUDE.md                 imports the two files above for Claude Code
+services/                 rules per type of service
+hooks/guard.py            PreToolUse hook: allow / ask / deny, and input rewritten for masking
+hooks/session-start.py    SessionStart hook: injects RULES-CORE.md in active projects, asks in the others
+hooks/mask.py             masking of reserved terms: runner, PostToolUse and UserPromptSubmit hooks
+hooks/hooks.json          hook registration in the plugin
+skills/guardrail/         skill that loads the right service file
+commands/check.md         /guardrail:check — is the hook running?
+commands/setup.md         /guardrail:setup — turn on and configure the current repo
+commands/log.md           /guardrail:log — summarizes recent blocks
+commands/approve.md       /guardrail:approve — approve a script, record its fingerprint
+docs/                     configuration, masking and development in detail; incident notes
+examples/                 example .guardrail.json, recommended settings,
+                          reference clone-prod-to-local.sh
+tests/                    cases, runner, script fixtures, session-start and activation tests
+.claude-plugin/           plugin and marketplace manifests
 ```
