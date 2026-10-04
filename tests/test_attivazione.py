@@ -93,6 +93,27 @@ def main() -> int:
         failures += check("spento: Write nel codice del plugin", esito(home, libero, tool=write(home / ".claude" / "plugins" / "x" / "guard.py")), "deny")
         failures += check("spento: Write su ~/.claude/settings.json", esito(home, libero, tool=write(home / ".claude" / "settings.json")), "ask")
         failures += check("spento: il resto passa", esito(home, libero, tool=write(libero / "note.txt")), "allow")
+        failures += check("spento: find -delete del .guardrail.json", esito(home, libero, tool=bash(f"find {scelto} -name .guardrail.json -delete")), "deny")
+        failures += check("spento: ln -sf al posto del .guardrail.json", esito(home, libero, tool=bash(f"ln -sf /dev/null {scelto}/.guardrail.json")), "ask")
+        impostazioni = write(scelto / ".claude" / "settings.local.json")
+        failures += check("spento: Write sulle settings di un altro progetto", esito(home, libero, tool=impostazioni), "ask")
+        failures += check("acceso: Write sulle settings del progetto", esito(home, scelto, tool=impostazioni), "ask")
+        failures += check("spento: Write nei hook di un progetto", esito(home, libero, tool=write(scelto / ".claude" / "hooks" / "x.sh")), "ask")
+        failures += check("spento: Write su un file qualunque in .claude/", esito(home, libero, tool=write(scelto / ".claude" / "note.md")), "allow")
+
+        # Uno script scritto apposta non è una via laterale.
+        (libero / "togli.sh").write_text(f"#!/bin/sh\nrm {scelto}/.guardrail.json\n", encoding="utf-8")
+        failures += check("spento: script che toglie un .guardrail.json", esito(home, libero, tool=bash("bash togli.sh")), "deny")
+        (scelto / "togli.sh").write_text("#!/bin/sh\nrm .guardrail.json\n", encoding="utf-8")
+        failures += check("acceso: script che toglie il .guardrail.json", esito(home, scelto, tool=bash("bash togli.sh")), "deny")
+        (libero / "innocuo.sh").write_text('#!/bin/sh\nrm -rf "$X"\n', encoding="utf-8")
+        failures += check("spento: script con altro dentro passa", esito(home, libero, tool=bash("bash innocuo.sh")), "allow")
+
+        # Un link a /dev/null al posto del file non spegne guardrail.
+        linkato = home / "linkato"
+        (linkato / ".git").mkdir(parents=True)
+        (linkato / ".guardrail.json").symlink_to("/dev/null")
+        failures += check("link a /dev/null al posto del .guardrail.json: resta acceso", esito(home, linkato), "deny")
 
         (base / "mask.tsv").write_text("magazzino\tsede1\n", encoding="utf-8")
         od = {"tool_name": "Bash", "tool_input": {"command": "od -c nota.txt"}}

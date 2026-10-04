@@ -64,7 +64,8 @@ il comando: non risolve le variabili.
 | Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`) e sugli altri file di segreti | CONFERMA |
 | Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
 | Scrittura, da tool o da shell, su `.guardrail.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands|skills|agents|rules` | CONFERMA |
-| Rimozione da shell di `.guardrail.json` (`rm`, `unlink`, `mv` come sorgente, `git rm`, `git mv`) | BLOCCO |
+| Rimozione da shell di `.guardrail.json` (`rm`, `unlink`, `mv` come sorgente, `git rm`, `git mv`, `find … -delete`), anche dentro uno script lanciato | BLOCCO |
+| Scrittura (Write/Edit) su `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md` e su `.claude/hooks|commands|skills|agents|rules` di un progetto | CONFERMA |
 | Scrittura, da tool o da shell, in `~/.claude/plugins` o `~/.claude/hooks` (il codice di guardrail stesso) | BLOCCO |
 | Scrittura (Write/Edit) fuori dal progetto corrente, dallo scratchpad e dalla memoria di Claude Code | CONFERMA |
 | Codice passato a una shell come stringa (`bash -c "…"`, `sh -c '…'`, `eval …`, `ssh host "…"`): analizzato con le stesse regole, stesso esito | come il comando che contiene |
@@ -104,7 +105,13 @@ conferma: qualunque contenuto, anche `{}`, lo lascia acceso.
 Queste regole sulla configurazione e sul codice di guardrail valgono anche nelle
 cartelle dove guardrail è spento, le sole a farlo: da lì si raggiungono i
 `.guardrail.json` degli altri progetti, `~/.guardrail.json` (che si somma a ogni
-progetto acceso) e il codice del plugin.
+progetto acceso), le settings dei progetti (`enabledPlugins` spegne il plugin) e
+il codice del plugin. Per guardrail è acceso qualunque voce si chiami
+`.guardrail.json`, non solo un file: un link a `/dev/null` al suo posto non lo
+spegne.
+
+**Limite dichiarato**: un interprete che non è una shell (`python3 -c
+"os.remove(…)"`) resta fuori, come per ogni altra regola.
 
 L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
 directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede

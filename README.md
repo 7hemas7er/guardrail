@@ -119,9 +119,11 @@ spegne niente. Togliere `.guardrail.json` (`rm`, `mv`, `git rm`) è bloccato: è
 modo di spegnere guardrail, e quella decisione resta all'utente.
 
 Dove è spento, guardrail tiene comunque le regole che proteggono sé stesso: la
-rimozione di un `.guardrail.json` (bloccata), le scritture su un `.guardrail.json`
-o su `~/.guardrail.json` e sulle impostazioni di Claude Code (in conferma), sul
-codice dei plugin in `~/.claude/plugins` (bloccate). Altrimenti una sessione
+rimozione di un `.guardrail.json` (bloccata, anche con `find … -delete` o dentro
+uno script lanciato), le scritture su un `.guardrail.json` o su `~/.guardrail.json`
+e sulle impostazioni di Claude Code, della home o del `.claude/` di un progetto (in
+conferma), sul codice dei plugin in `~/.claude/plugins` (bloccate). Un link o una
+directory al posto di `.guardrail.json` lo lasciano acceso. Altrimenti una sessione
 aperta in una cartella qualunque potrebbe spegnerlo, o allentarlo con un
 `allow_commands` in `~/.guardrail.json`, nei progetti dove è acceso.
 

@@ -232,9 +232,11 @@ def config_progetto(start: str) -> Path | None:
         home = Path.home().resolve()
     except (OSError, RuntimeError):
         return None
+    # Conta qualunque voce con quel nome, non solo un file: un link a /dev/null o una
+    # directory al suo posto non devono spegnere guardrail.
     for candidate in [current, *current.parents]:
         probe = candidate / ".guardrail.json"
-        if candidate != home and probe.is_file():
+        if candidate != home and os.path.lexists(probe):
             return probe
     return None
 
@@ -560,14 +562,19 @@ def removed_paths(segment: str) -> list[str]:
     return []
 
 
+SPEGNE_GUARDRAIL = "è il file che accende guardrail nel suo progetto"
+
+
 def check_protected_writes(text: str) -> None:
     for segment in shell_segments(text):
         tolto = next((p for p in removed_paths(segment) if Path(p).name == ".guardrail.json"), None)
+        if tolto is None and "guardrail" in segment and FIND_DELETE.search(segment):
+            tolto = "un .guardrail.json (find … -delete)"
         if tolto:
             deny(
-                f"rimozione di {tolto}: è il file che accende guardrail in questo progetto, toglierlo lo "
-                "spegne. Spegnerlo è una decisione dell'utente, che lo fa da sé. Se una regola ti blocca a "
-                "torto, spiegalo all'utente. (guardrail: RULES-CORE.md 8)"
+                f"rimozione di {tolto}: {SPEGNE_GUARDRAIL}, toglierlo lo spegne. Spegnerlo è una "
+                "decisione dell'utente, che lo fa da sé. Se una regola ti blocca a torto, spiegalo "
+                "all'utente. (guardrail: RULES-CORE.md 8)"
             )
         for target in write_targets(segment):
             match = PROTECTED_PATH.search(target)
@@ -720,8 +727,9 @@ def check_scripts(text: str, config: dict, cwd: str) -> None:
             check_bash(content, config, cwd, depth=1)
         except Decision as found:
             # `deny_commands` non si esenta: è la lista "questo non si lancia
-            # mai", e vale anche dentro uno script approvato.
-            if found.reason.startswith("comando vietato dalla configurazione"):
+            # mai", e vale anche dentro uno script approvato. Lo stesso per la
+            # rimozione di .guardrail.json: uno script non spegne guardrail.
+            if found.reason.startswith("comando vietato dalla configurazione") or SPEGNE_GUARDRAIL in found.reason:
                 deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
             if approvazione == "si":
                 continue
@@ -1368,16 +1376,41 @@ def check_write_guardrail(path: Path) -> None:
             f"modifica della configurazione di Claude Code ({raw}): tocca permessi, hook, comandi o "
             "istruzioni dell'utente. Mostra il cambiamento e fallo approvare."
         )
+    # Lo stesso nel .claude/ di un progetto: con `enabledPlugins` o `env` le sue
+    # settings spengono guardrail lì. Da shell PROTECTED_PATH lo copre già.
+    parti = path.parts[:-1]
+    if in_home is None or in_home.parts[:1] != (".claude",):
+        if ".claude" in parti:
+            resto = path.parts[len(parti) - parti[::-1].index(".claude"):]
+            if resto in (("settings.json",), ("settings.local.json",), ("CLAUDE.md",)) or (
+                len(resto) > 1 and resto[0] in CLAUDE_HOME_CODE_DIRS | CLAUDE_HOME_GOVERNANCE_DIRS
+            ):
+                ask(
+                    f"modifica della configurazione di Claude Code del progetto ({raw}): settings, hook e "
+                    "istruzioni possono spegnere o aggirare guardrail. Mostra il cambiamento e fallo approvare."
+                )
 
 
-def check_bash_guardrail(cmd: str, depth: int = 0) -> None:
+def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
     """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
-    .guardrail.json; anche dentro `bash -c "…"`."""
+    .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
     check_protected_writes(text)
     if depth < MAX_DEPTH:
         for payload in inline_shell_payloads(text):
-            check_bash_guardrail(payload, depth + 1)
+            check_bash_guardrail(payload, cwd, depth + 1)
+    if depth == 0:
+        for path in invoked_scripts(text, cwd):
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                check_bash_guardrail(content, cwd, depth=1)
+            except Decision as found:
+                if found.verdict == "deny":
+                    deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
+                ask(f"lo script {path.name} tocca la configurazione di guardrail o di Claude Code — {found.reason}")
 
 
 def check_write(tool_input: dict, cwd: str) -> None:
@@ -1430,7 +1463,7 @@ def decide(payload: dict) -> None:
     # scrivendo allow_commands in ~/.guardrail.json, toccando il codice del plugin.
     if not attivo(cwd):
         if tool == "Bash":
-            check_bash_guardrail(str(tool_input.get("command", "")))
+            check_bash_guardrail(str(tool_input.get("command", "")), cwd)
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
             path = target_path(tool_input)
             if path is not None:
