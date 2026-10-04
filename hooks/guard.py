@@ -490,14 +490,27 @@ CODE_WRITES = re.compile(
 )
 # Codice che lancia processi: lì una stringa può diventare un comando di shell
 # (`os.system("rm -rf …")`, `execSync(…)`), e le regole della shell devono vederla.
+# Niente `\b` davanti: `asyncio.create_subprocess_shell` e `os.execvp` contano.
+# L'accesso dinamico (`getattr(os, 'sys' + 'tem')`, `__import__`, `eval`) vale
+# come un lancio: da fuori non si sa cosa chiama. È comunque una lista nera, e
+# protegge da un agente che sbaglia, non da uno che cerca il buco.
 SPAWNS_PROCESS = re.compile(
-    r"\b(?:subprocess|child_process|Open3|pty)\b"
-    r"|\b(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|shell_exec|passthru|proc_open|pcntl_exec)\s*\("
+    r"(?:subprocess|child_process|Open3|getattr|__import__|importlib|builtins|process\.binding)"
+    r"|(?:system|popen|exec\w*|spawn\w*|shell_exec|passthru|proc_open|eval|Function|globals)\s*\("
+)
+# L'inizio di un comando: dopo un separatore, saltati i prefissi (`sudo`, `env`,
+# `FOO=1`, `timeout 60`) e il path del programma. Chi guarda *quale* comando
+# riceve un heredoc o una stringa di codice deve guardare qui, non in un punto
+# qualunque della riga: in `python=1 bash <<'EOF'` il comando è bash.
+CMD_START = (
+    r"(?:^|[;&|(\n]\s*)(?:(?:sudo|env|nohup|time|exec|command|timeout\s+[^\s;&|]+|\w+=[^\s;&|]*)\s+)*"
+    r"(?:[\w./~-]*/)?"
 )
 # `node -e '…'`, `python3 -c "…"`: il codice passato come stringa, intero.
 INLINE_CODE = re.compile(
-    r"\b(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
-    r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")"""
+    CMD_START + r"(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
+    r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")""",
+    re.M,
 )
 # Il bersaglio di una redirezione è il token che la segue, non il comando che la
 # contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
@@ -833,12 +846,16 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
 # forma normale in cui questo repo documenta i propri blocchi. `bash <<EOF` resta
 # fuori, e il suo corpo continua a essere analizzato. La riga di testa e tutto ciò
 # che segue il tag di chiusura restano comunque analizzati, in ogni caso.
+# Il comando che riceve l'heredoc dev'essere `cat` con una redirezione, `tee`, o
+# git/gh, nello stesso segmento: in `echo x > /dev/null; bash <<'EOF'` la
+# redirezione è di echo, e il corpo lo esegue bash.
 HEREDOC_DATA_HEAD = (
-    r"(?:>>?\s*\S+|\btee\b"
-    r"|\b(?:git|gh)\b[^\n]*?(?:--body-file|--notes-file|--file|-F)[=\s]+-(?=\s))"
+    r"(?:cat\b[^\n;&|<]*>|tee\b"
+    r"|(?:git|gh)\b[^\n;&|]*?(?:--body-file|--notes-file|--file|-F)[=\s]+-(?=\s))"
 )
 HEREDOC = re.compile(
-    r"(?P<head>^[^\n]*?" + HEREDOC_DATA_HEAD + r"[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?" + HEREDOC_DATA_HEAD
+    + r"[^\n;&|]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
@@ -867,8 +884,8 @@ HEREDOC = re.compile(
 # `bash`/`sh`/`zsh` restano fuori: lì il corpo è shell per davvero, e le regex di
 # progetto devono vederlo.
 HEREDOC_INTERPRETER = re.compile(
-    r"(?P<head>^[^\n]*?\b(?P<interp>python[\d.]*|node|ruby|perl|php|Rscript)\b"
-    r"[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?(?:[\w./~-]*/)?(?P<interp>python[\d.]*|node|ruby|perl|php|Rscript)(?=[\s<])"
+    r"[^\n;&|]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
