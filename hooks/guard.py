@@ -1006,7 +1006,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     # Deploy con cancellazione sul bersaglio
     if "lftp" in words and re.search(r"\bmirror\b[^;|]*--delete\b", text) and not re.search(r"\bmirror\b[^;|]*--dry-run\b", text):
         deny("lftp mirror --delete senza --dry-run: cancella sul server remoto tutto ciò che manca in locale. (guardrail: deploy-infrastruttura.md)")
-    if "rsync" in words and re.search(r"\brsync\b[^;|]*--delete", text) and not re.search(r"\brsync\b[^;|]*(\s--dry-run\b|\s-[a-zA-Z]*n[a-zA-Z]*\b)", text):
+    if rsync_che_cancella(text):
         deny("rsync --delete senza --dry-run / -n: cancella sul bersaglio. Prima il dry-run, poi l'utente decide.")
 
     # Git
@@ -1059,6 +1059,33 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
 
     if (pattern := matches_any(config["ask_commands"], testo_progetto)):
         ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
+
+
+RSYNC = re.compile(r"(?:[\w./~-]*/)?rsync")
+DRY_RUN_SHORT = re.compile(r"-[a-zA-Z]*n[a-zA-Z]*")
+
+
+def rsync_che_cancella(text: str) -> bool:
+    """rsync *eseguito* con --delete e senza dry-run.
+
+    `--delete` conta solo come opzione di un rsync dello stesso segmento, token per
+    token: in `sed -i 's/rsync -a --delete-after /rsync -a /' x; grep rsync x`
+    rsync è una parola del comando e --delete compare nel testo, ma tutti e due
+    stanno dentro il pattern di sed, che il --delete lo stava togliendo. Falso
+    positivo del 2026-10-03. `timeout 60 rsync …` e `find … -exec rsync …` restano
+    presi: rsync è un token del segmento anche se non è il primo.
+    """
+    for segment in shell_segments(text):
+        tokens = shell_tokens(segment)
+        for indice, token in enumerate(tokens):
+            if not RSYNC.fullmatch(token):
+                continue
+            opzioni = tokens[indice + 1:]
+            cancella = any(o.startswith("--delete") or o == "--del" for o in opzioni)
+            prova = any(o == "--dry-run" or DRY_RUN_SHORT.fullmatch(o) for o in opzioni)
+            if cancella and not prova:
+                return True
+    return False
 
 
 SQL_CLI_NAMES = frozenset(
