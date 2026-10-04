@@ -324,8 +324,12 @@ def matches_any(patterns: list[str], text: str) -> str | None:
 
 # `timeout [opzioni] 60 cmd`: lancia cmd, che resta in posizione di comando.
 TIMEOUT_PREFIX = r"\btimeout\s+(?:[^\s;&|]+\s+)*?\d[\d.]*[smhd]?\s+"
+# In posizione di comando, anche dietro ciò che lancia il comando seguente senza
+# cambiarlo: `command rm -rf "$X"` (la forma di nvm.sh), `env rm`, `FOO=1 rm`.
+RM_PREFIX = r"(?:(?:command|builtin|exec|nohup|time|env(?:\s+-[^\s;&|]+)*|\w+=[^\s;&|]*)\s+)*"
 RM_ANY = re.compile(
-    r"(?:^|[;&|(\n]\s*|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX + r")rm\s+(?P<args>[^;&|)\n]*)",
+    r"(?:(?:^|[;&|(\n])\s*" + RM_PREFIX + r"|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX
+    + r")rm\s+(?P<args>[^;&|)\n]*)",
     re.M,
 )
 RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s|$)")

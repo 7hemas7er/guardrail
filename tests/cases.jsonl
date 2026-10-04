@@ -259,10 +259,13 @@
 {"name": ".envrc resta un file di segreti", "tool_name": "Bash", "tool_input": {"command": "cat .envrc"}, "expect": "deny"}
 {"name": "timeout davanti a cat .env non lo nasconde", "tool_name": "Bash", "tool_input": {"command": "timeout 5 cat app/.env.local"}, "expect": "deny"}
 {"name": "timeout davanti a rm -rf su variabile non lo nasconde", "tool_name": "Bash", "tool_input": {"command": "timeout 60 rm -rf \"$X\""}, "expect": "deny"}
+{"name": "command davanti a rm -rf su variabile non lo nasconde (la forma di nvm.sh)", "tool_name": "Bash", "tool_input": {"command": "command rm -rf \"${TMPDIR}\""}, "expect": "deny"}
+{"name": "assegnazione e env davanti a rm -rf su variabile non lo nascondono", "tool_name": "Bash", "tool_input": {"command": "cd x && LC_ALL=C env -i nohup rm -rf \"$X\""}, "expect": "deny"}
+{"name": "command rm citato in un pattern di grep: ok", "tool_name": "Bash", "tool_input": {"command": "grep -n \"command rm -rf\" ~/.nvm/nvm.sh"}, "expect": "allow"}
 {"name": "timeout con opzioni davanti a rm -rf di un path letterale: ok", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 rm -rf build"}, "expect": "allow"}
 {"name": "timeout con opzioni davanti a psql verso prod", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 psql -h db-produzione.esempio.com -c \"DELETE FROM t WHERE id = 1\""}, "expect": "deny"}
 {"name": "timeout davanti a bash -c: la stringa resta analizzata", "tool_name": "Bash", "tool_input": {"command": "timeout 10 bash -c 'rm -rf \"$X\"'"}, "expect": "deny"}
-{"name": "falso positivo 2026-10-04: le righe di nvm.sh non tolgono .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "source tests/fixtures/come-nvm.sh && nvm use 20"}, "expect": "allow"}
+{"name": "falso positivo 2026-10-04: le righe di nvm.sh non tolgono .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "source tests/fixtures/come-nvm.sh && nvm use 20"}, "expect": "ask", "reason_contains": "lo script come-nvm.sh contiene un comando che guardrail bloccherebbe"}
 {"name": "falso positivo 2026-10-04: bash -n e sh -n controllano la sintassi, non eseguono", "tool_name": "Bash", "tool_input": {"command": "bash -n tests/fixtures/senza_impronta.sh && sh -n tests/fixtures/senza_impronta.sh && echo ok"}, "expect": "allow"}
 {"name": "dash -n e poi l'esecuzione vera: lo script si legge", "tool_name": "Bash", "tool_input": {"command": "dash -n tests/fixtures/senza_impronta.sh && bash tests/fixtures/senza_impronta.sh"}, "expect": "ask"}
 {"name": "bash -ni: una shell interattiva ignora -n, lo script si legge", "tool_name": "Bash", "tool_input": {"command": "bash -ni tests/fixtures/senza_impronta.sh"}, "expect": "ask"}
@@ -276,14 +279,14 @@
 {"name": "heredoc a bash dopo una redirezione di un altro comando: non e' un heredoc di dati", "tool_name": "Bash", "tool_input": {"command": "echo x > /dev/null; bash <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
 {"name": "heredoc Python con create_subprocess_shell: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport asyncio\nasyncio.run(asyncio.create_subprocess_shell('''\nrm -rf ~\n'''))\nPY"}, "expect": "deny"}
 {"name": "heredoc Python con accesso dinamico (getattr): il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport os\ngetattr(os, 'sys' + 'tem')('''\nrm -rf ~\n''')\nPY"}, "expect": "deny"}
-{"name": "heredoc Python dopo cd e &&: il corpo resta codice", "tool_name": "Bash", "tool_input": {"command": "cd docs && python3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
-{"name": "heredoc Ruby: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "ruby - <<'RB'\nputs '\nrm -rf ~\n'\nRB"}, "expect": "deny"}
-{"name": "falso positivo 2026-10-04: node -e che legge un file sotto .claude/plugins", "tool_name": "Bash", "tool_input": {"command": "node -e 'console.log(require(process.env.HOME+\"/.claude/plugins/known_marketplaces.json\"))'"}, "expect": "allow"}
 {"name": "heredoc a bash dentro $( ) sulla riga di python: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 $(bash <<'EOF'\nrm -rf ~\nEOF\n)"}, "expect": "deny"}
 {"name": "heredoc a bash dentro <( ) sulla riga di python: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <(bash <<'EOF'\nrm -rf ~\nEOF\n)"}, "expect": "deny"}
 {"name": "heredoc a bash fra backtick sulla riga di node: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "node `bash <<'EOF'\nrm -rf ~\nEOF\n`"}, "expect": "deny"}
 {"name": "tee verso una process substitution di bash: non e' un heredoc di dati", "tool_name": "Bash", "tool_input": {"command": "tee >(bash) <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
 {"name": "cat verso una process substitution di bash: non e' un heredoc di dati", "tool_name": "Bash", "tool_input": {"command": "cat > >(bash) <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc Python dopo cd e &&: il corpo resta codice", "tool_name": "Bash", "tool_input": {"command": "cd docs && python3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
+{"name": "heredoc Ruby: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "ruby - <<'RB'\nputs '\nrm -rf ~\n'\nRB"}, "expect": "deny"}
+{"name": "falso positivo 2026-10-04: node -e che legge un file sotto .claude/plugins", "tool_name": "Bash", "tool_input": {"command": "node -e 'console.log(require(process.env.HOME+\"/.claude/plugins/known_marketplaces.json\"))'"}, "expect": "allow"}
 {"name": "python -c che legge .guardrail.json: ok", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json; print(json.load(open('.guardrail.json')))\""}, "expect": "allow"}
 {"name": "node -e che scrive le settings: conferma", "tool_name": "Bash", "tool_input": {"command": "node -e 'require(\"fs\").writeFileSync(\".claude/settings.json\", \"{}\")'"}, "expect": "ask"}
 {"name": "python -c che apre .guardrail.json in scrittura: conferma", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"open('.guardrail.json', 'w').write('{}')\""}, "expect": "ask"}
