@@ -513,34 +513,84 @@ CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
 SHELL_PUNCTUATION = frozenset("();<>|&")
 
 
+def ultimo_segmento(testo: str) -> str | None:
+    """Il testo dopo l'ultimo separatore *vero*: `;`, `|`, `&`, `(`, `)` o a capo
+    fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
+    escapata (`";"`, `\\>`) diventa `_`, perché nessuno la scambi dopo per un
+    operatore: shlex in modo posix toglie le virgolette, e `";"` tornerebbe `;`.
+
+    Un `\\` fuori dalle virgolette si porta via il carattere che segue, a capo
+    compreso: `bash -s \\` a capo `python3` è un comando solo, bash. Un `#` a
+    inizio parola apre un commento fino a capo, e lì niente è un operatore.
+    None se `testo` finisce dentro una stringa, un escape o un commento: chi
+    chiede del comando finale di una riga che non si chiude non sa niente.
+    """
+    corrente: list[str] = []
+    stato = ""  # "" fuori, "'" o '"' dentro una stringa, "#" in un commento
+    i, n = 0, len(testo)
+    while i < n:
+        c = testo[i]
+        if stato == "#":
+            if c == "\n":
+                stato, corrente = "", []
+            i += 1
+            continue
+        if stato == "'":
+            stato = "" if c == "'" else stato
+            corrente.append("_" if c in "();<>|&" else c)
+            i += 1
+            continue
+        if c == "\\":
+            if i + 1 >= n:
+                return None
+            if testo[i + 1] != "\n":
+                seguente = testo[i + 1]
+                corrente.append("\\" + ("_" if seguente in "();<>|&" else seguente))
+            i += 2
+            continue
+        if stato == '"':
+            stato = "" if c == '"' else stato
+            corrente.append("_" if c in "();<>|&" else c)
+            i += 1
+            continue
+        if c in "'\"":
+            stato = c
+            corrente.append(c)
+        elif c == "#" and (not corrente or corrente[-1] in " \t"):
+            stato = "#"
+        elif c in ";|&()\n":
+            corrente = []
+        else:
+            corrente.append(c)
+        i += 1
+    if stato:
+        return None
+    return "".join(corrente)
+
+
 def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
     """Il comando in corso alla fine di `testo`, letto come lo legge la shell:
     virgolette comprese, separatori (`;`, `&&`, `|`, `(`, a capo) e prefissi
     (`sudo`, `env`, `FOO=1`, `timeout 60`) esclusi. Nome, argomenti, e se ha una
     redirezione in uscita.
 
-    None se non si sa: virgolette spaiate (la fine di `testo` sta dentro una
-    stringa), backtick, o un segmento senza comando. Chi riceve None non deve
-    concludere niente di favorevole.
+    None se non si sa: la fine di `testo` sta dentro una stringa, dopo un escape
+    o in un commento; c'è un backtick; il segmento non ha comando. Chi riceve
+    None non deve concludere niente di favorevole.
     """
-    lexer = shlex.shlex(testo.replace("\n", " ; "), punctuation_chars=True, posix=True)
+    segmento = ultimo_segmento(testo)
+    if segmento is None or "`" in segmento:
+        return None
+    lexer = shlex.shlex(segmento, punctuation_chars=True, posix=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
         return None
-    segmento: list[str] = []
-    for token in tokens:
-        if "`" in token:
-            return None
-        if token and set(token) <= SHELL_PUNCTUATION and set(token) & set(";|&()"):
-            segmento = []
-        else:
-            segmento.append(token)
     comando: list[str] = []
     uscita = salta = False
-    for token in segmento:
+    for token in tokens:
         if salta:
             salta = False
             continue

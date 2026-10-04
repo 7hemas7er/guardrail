@@ -292,6 +292,11 @@
 {"name": "heredoc di dati con il tag senza virgolette e $( nel corpo: la shell lo esegue", "tool_name": "Bash", "tool_input": {"command": "cat > x.md <<EOF\n$(rm -rf ~)\nEOF"}, "expect": "deny"}
 {"name": "un apostrofo nel corpo di un heredoc precedente non apre una stringa", "tool_name": "Bash", "tool_input": {"command": "cat > a.md <<'EOF'\nit's\nEOF\npython3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
 {"name": "python3 -c fra virgolette di tee: il comando e' tee, e scrive su .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "tee \"; python3 -c '\" .guardrail.json \"'\""}, "expect": "ask"}
+{"name": "heredoc a bash -s con un ; fra virgolette prima di python3: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "bash -s \";\" python3 <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc a bash -s con un ; escapato prima di python3: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "bash -s \\; python3 <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc a bash -s con python3 sulla riga continuata: il comando resta bash", "tool_name": "Bash", "tool_input": {"command": "bash -s \\\npython3 <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "<< dopo un # e' un commento: non apre un heredoc, le righe dopo sono comandi", "tool_name": "Bash", "tool_input": {"command": "echo x # ; python3 - <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc Python con un ; fra virgolette in un comando precedente: il corpo resta codice", "tool_name": "Bash", "tool_input": {"command": "echo \"a;b\" && python3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
 {"name": "heredoc Python dopo cd e &&: il corpo resta codice", "tool_name": "Bash", "tool_input": {"command": "cd docs && python3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
 {"name": "heredoc Ruby: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "ruby - <<'RB'\nputs '\nrm -rf ~\n'\nRB"}, "expect": "deny"}
 {"name": "falso positivo 2026-10-04: node -e che legge un file sotto .claude/plugins", "tool_name": "Bash", "tool_input": {"command": "node -e 'console.log(require(process.env.HOME+\"/.claude/plugins/known_marketplaces.json\"))'"}, "expect": "allow"}
