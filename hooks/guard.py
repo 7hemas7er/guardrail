@@ -321,8 +321,10 @@ def matches_any(patterns: list[str], text: str) -> str | None:
 # Bash: cancellazioni
 # ---------------------------------------------------------------------------
 
+# `timeout [opzioni] 60 cmd`: lancia cmd, che resta in posizione di comando.
+TIMEOUT_PREFIX = r"\btimeout\s+(?:[^\s;&|]+\s+)*?\d[\d.]*[smhd]?\s+"
 RM_ANY = re.compile(
-    r"(?:^|[;&|(\n]\s*|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*)rm\s+(?P<args>[^;&|)\n]*)",
+    r"(?:^|[;&|(\n]\s*|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX + r")rm\s+(?P<args>[^;&|)\n]*)",
     re.M,
 )
 RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s|$)")
@@ -340,7 +342,7 @@ DANGEROUS_RM_TARGET = re.compile(
     re.X,
 )
 FIND_DELETE = re.compile(
-    r"(?:^|[;&|(]\s*)(?:sudo\s+)?find\s+(?P<root>[^-\s;&|][^\s;&|]*)?[^;&|]*?(?:-delete\b|-exec\s+(?:sudo\s+)?rm\b)"
+    r"(?:^|[;&|(]\s*)(?:sudo\s+|" + TIMEOUT_PREFIX + r")?find\s+(?P<root>[^-\s;&|][^\s;&|]*)?[^;&|]*?(?:-delete\b|-exec\s+(?:sudo\s+)?rm\b)"
 )
 
 
@@ -386,8 +388,12 @@ def check_rm(cmd: str) -> None:
 # `\.env(?:\.[\w-]+)*` prende la catena *intera* dei suffissi: con un solo
 # segmento `.env.azure.example` si fermerebbe a `.env.azure`, e l'esenzione
 # template (ancorata in fondo) non vedrebbe mai `.example`.
+# `.env` è un nome di file solo se comincia lì: in `process.env.HOME` e
+# `os.environ` è un pezzo di identificatore, e leggerlo come il file `.env.HOME`
+# è il falso positivo del 2026-09-28 (9 volte in una settimana). Davanti ci può
+# stare l'inizio, `/`, uno spazio, una virgoletta, `=`; mai una lettera o `$`.
 SECRET_FILE = re.compile(
-    r"(?:[\w./~-]*/)?(?:\.env(?:\.[\w-]+)*|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
+    r"(?:[\w./~-]*/)?(?:(?<![\w$])\.env(?:rc)?(?:\.[\w-]+)*(?![A-Za-z0-9])|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
     r"|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc"
     r"|\.aws/credentials|\.docker/config\.json|\.kube/config|gh/hosts\.yml|\.gnupg/[^\s\"']+"
     r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
@@ -402,7 +408,9 @@ SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
 # `grep "\.env" casi.jsonl` quel `.env` è una regex e non si legge nessun segreto.
 PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "perl"}
 # ...a meno che il pattern arrivi da un flag: allora ogni operando è un file.
+# Anche in forma composta (`sed -ne`, `grep -ve`, `awk -f`).
 PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file", "--expression"}
+PATTERN_SHORT_FLAG = re.compile(r"-[a-zA-Z]*[ef]")
 
 # File che governano guardrail e Claude Code: modificarli da shell è il modo di
 # aggirare un blocco senza passare da Write/Edit.
@@ -431,9 +439,44 @@ WRITER_TARGETS = {
     "dd": "of",
     "python": "opaque", "python3": "opaque", "node": "opaque",
 }
-# Quel che sta *prima* del vero comando: `sudo -u deploy rm x`, `FOO=1 tee y`.
+# Quel che sta *prima* del vero comando: `sudo -u deploy rm x`, `FOO=1 tee y`,
+# `timeout 60 grep …`.
 COMMAND_PREFIX = re.compile(r"^(?:sudo|command|env|nohup|time|xargs|\w+=.*)$")
 PREFIX_VALUE_FLAGS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-n", "-I"}
+# `timeout` ha una durata obbligatoria fra sé e il comando: senza saltarla,
+# `timeout 60 grep -o "process\.env" bin` prende 60 per il comando e il pattern
+# per un file. Falso positivo del 2026-09-28.
+DURATA = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+TIMEOUT_VALUE_FLAGS = {"-s", "-k", "--signal", "--kill-after"}
+
+
+def dopo_timeout(tokens: list[str], indice: int) -> int:
+    """L'indice del comando che `timeout` lancia: dopo le sue opzioni e la durata."""
+    while indice < len(tokens) and tokens[indice].startswith("-"):
+        indice += 2 if tokens[indice] in TIMEOUT_VALUE_FLAGS else 1
+    if indice < len(tokens) and DURATA.fullmatch(tokens[indice]):
+        indice += 1
+    return indice
+
+
+def senza_prefissi(tokens: list[str]) -> list[str]:
+    """Il comando vero con i suoi argomenti, tolto ciò che gli sta davanti."""
+    seen_prefix = False
+    while tokens:
+        if os.path.basename(tokens[0]) == "timeout":
+            tokens = tokens[dopo_timeout(tokens, 1):]
+            seen_prefix = False
+            continue
+        if COMMAND_PREFIX.match(tokens[0]):
+            tokens = tokens[1:]
+            seen_prefix = True
+            continue
+        # I flag di sudo/env/xargs, non quelli del comando vero.
+        if seen_prefix and tokens[0].startswith("-"):
+            tokens = tokens[2:] if tokens[0] in PREFIX_VALUE_FLAGS else tokens[1:]
+            continue
+        break
+    return tokens
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
 # Il bersaglio di una redirezione è il token che la segue, non il comando che la
 # contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
@@ -460,20 +503,7 @@ def shell_tokens(segment: str) -> list[str]:
 def write_targets(segment: str) -> list[str]:
     """Gli operandi su cui il comando *scrive*. Un comando di lettura non ne ha."""
     targets = redirect_targets(segment)
-    tokens = shell_tokens(segment)
-    seen_prefix = False
-    while tokens:
-        if COMMAND_PREFIX.match(tokens[0]):
-            tokens.pop(0)
-            seen_prefix = True
-            continue
-        # I flag di sudo/env/xargs, non quelli del comando vero.
-        if seen_prefix and tokens[0].startswith("-"):
-            flag = tokens.pop(0)
-            if flag in PREFIX_VALUE_FLAGS and tokens:
-                tokens.pop(0)
-            continue
-        break
+    tokens = senza_prefissi(shell_tokens(segment))
     if not tokens:
         return targets
     mode = WRITER_TARGETS.get(os.path.basename(tokens[0]))
@@ -503,18 +533,26 @@ def secret_names(values: list[str]) -> list[str]:
 
 def file_operands(segment: str) -> list[str]:
     """Gli operandi che il comando tratta come file, senza il pattern di grep/sed/awk."""
-    tokens = shell_tokens(segment)
-    while tokens and COMMAND_PREFIX.match(tokens[0]):
-        tokens.pop(0)
+    tokens = senza_prefissi(shell_tokens(segment))
     if not tokens:
         return []
     args = tokens[1:]
-    operands = [a for a in args if not a.startswith("-")]
-    if os.path.basename(tokens[0]) in PATTERN_COMMANDS and not any(
-        a in PATTERN_FLAGS or a.split("=", 1)[0] in PATTERN_FLAGS for a in args
-    ):
-        operands = operands[1:]
-    return operands
+    if os.path.basename(tokens[0]) not in PATTERN_COMMANDS:
+        return [a for a in args if not a.startswith("-")]
+    operands: list[str] = []
+    pattern_da_flag = salta = False
+    for arg in args:
+        if salta:
+            salta = False
+            continue
+        if not arg.startswith("-"):
+            operands.append(arg)
+        elif arg.split("=", 1)[0] in PATTERN_FLAGS or PATTERN_SHORT_FLAG.fullmatch(arg):
+            pattern_da_flag = True
+            # Il valore di -e è il pattern (`sed -e "s/x/os.environ['A']/"`): non è un
+            # file. Quello di -f sì, e si legge.
+            salta = "=" not in arg and (arg in ("--regexp", "--expression") or (arg[1] != "-" and arg.endswith("e")))
+    return operands if pattern_da_flag else operands[1:]
 
 
 def check_secret_reads(text: str) -> None:
@@ -544,9 +582,7 @@ def check_secret_reads(text: str) -> None:
 
 def removed_paths(segment: str) -> list[str]:
     """I file che il comando toglie dal loro posto: rm e unlink, la sorgente di mv, git rm/mv."""
-    tokens = shell_tokens(segment)
-    while tokens and COMMAND_PREFIX.match(tokens[0]):
-        tokens.pop(0)
+    tokens = senza_prefissi(shell_tokens(segment))
     if not tokens:
         return []
     command, args = os.path.basename(tokens[0]), tokens[1:]
@@ -604,9 +640,7 @@ def contiene_guardrail(base: Path, profondita: int = 2) -> bool:
 
 def link_al_guardrail(segment: str) -> bool:
     """`ln` o `cp -l/-s` con .guardrail.json fra gli operandi: un secondo nome per il file."""
-    tokens = shell_tokens(segment)
-    while tokens and COMMAND_PREFIX.match(tokens[0]):
-        tokens.pop(0)
+    tokens = senza_prefissi(shell_tokens(segment))
     if not tokens:
         return False
     command, args = os.path.basename(tokens[0]), tokens[1:]
@@ -866,6 +900,9 @@ def inline_shell_payloads(text: str) -> list[str]:
             continue
         if ENV_ASSIGNMENT.fullmatch(token) or token in COMMAND_WRAPPERS:
             continue
+        if os.path.basename(token) == "timeout":
+            indice = dopo_timeout(tokens, indice)
+            continue
         at_start = False
         nome = os.path.basename(token)
 
@@ -1059,6 +1096,7 @@ def invoked_commands(text: str) -> frozenset[str]:
     names: set[str] = set()
     at_start = True
     skip_next = False
+    in_timeout = False
     try:
         for token in lexer:
             if skip_next:  # il bersaglio di una redirezione non è un comando
@@ -1069,8 +1107,22 @@ def invoked_commands(text: str) -> frozenset[str]:
                 continue
             if token in SHELL_SEPARATORS:
                 at_start = True
+                in_timeout = False
                 continue
             if not at_start:
+                continue
+            # `timeout -k 5 60 psql …`: opzioni e durata non sono il comando.
+            if in_timeout:
+                if token in TIMEOUT_VALUE_FLAGS:
+                    skip_next = True
+                    continue
+                if token.startswith("-"):
+                    continue
+                in_timeout = False
+                if DURATA.fullmatch(token):
+                    continue
+            if os.path.basename(token) == "timeout":
+                in_timeout = True
                 continue
             if ENV_ASSIGNMENT.fullmatch(token):  # PGPASSWORD=x psql ...
                 continue
