@@ -64,6 +64,7 @@ il comando: non risolve le variabili.
 | Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`) e sugli altri file di segreti | CONFERMA |
 | Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
 | Scrittura, da tool o da shell, su `.guardrail.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands|skills|agents|rules` | CONFERMA |
+| Rimozione da shell di `.guardrail.json` (`rm`, `unlink`, `mv` come sorgente, `git rm`, `git mv`) | BLOCCO |
 | Scrittura, da tool o da shell, in `~/.claude/plugins` o `~/.claude/hooks` (il codice di guardrail stesso) | BLOCCO |
 | Scrittura (Write/Edit) fuori dal progetto corrente, dallo scratchpad e dalla memoria di Claude Code | CONFERMA |
 | Codice passato a una shell come stringa (`bash -c "…"`, `sh -c '…'`, `eval …`, `ssh host "…"`): analizzato con le stesse regole, stesso esito | come il comando che contiene |
@@ -93,6 +94,12 @@ Le conferme e i blocchi sulla configurazione di guardrail e di Claude Code — d
 tool e dalla shell, perché `echo '{}' > .guardrail.json` è una scrittura quanto
 una `Write` — servono a una cosa sola: un agente che ha ricevuto un blocco non
 può allentare da solo le regole che lo vincolano (regola 8).
+
+Togliere `.guardrail.json` è un blocco e non una conferma perché, dalla 0.10,
+è quel file ad accendere guardrail nel progetto: senza, il hook non controlla
+più niente. Una conferma in modalità auto la concede l'agente, e spegnere le
+regole che lo vincolano non può essere una sua decisione. Modificarlo resta una
+conferma: qualunque contenuto, anche `{}`, lo lascia acceso.
 
 L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
 directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede

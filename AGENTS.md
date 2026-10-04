@@ -9,13 +9,15 @@ avrebbero fermato: per questo il repo distribuisce anche hook che bloccano.
 
 ## Come usarlo
 
-- **Claude Code**: installa il plugin (vedi README). Le regole essenziali entrano
-  nel contesto a ogni sessione; i comandi pericolosi vengono bloccati o messi in
-  conferma; la skill `guardrail` carica le regole del servizio interessato;
-  `/guardrail:check` verifica che il hook sia attivo, `/guardrail:setup`
-  configura il `.guardrail.json` del repo corrente, `/guardrail:log` riassume
-  cosa è stato bloccato, `/guardrail:approve` approva uno script che si lancia di
-  continuo e ne registra l'impronta.
+- **Claude Code**: installa il plugin (vedi README), poi accendilo nei progetti
+  che vuoi proteggere: è attivo solo dove c'è un `.guardrail.json`. Lì le regole
+  essenziali entrano nel contesto a ogni sessione e i comandi pericolosi vengono
+  bloccati o messi in conferma; in una cartella senza, la prima sessione avvisa
+  che guardrail è spento. La skill `guardrail` carica le regole del servizio
+  interessato; `/guardrail:check` verifica che il hook sia attivo,
+  `/guardrail:setup` accende e configura guardrail nel repo corrente,
+  `/guardrail:log` riassume cosa è stato bloccato, `/guardrail:approve` approva
+  uno script che si lancia di continuo e ne registra l'impronta.
 - **Altri strumenti**: clona il repo accanto ai progetti e importa `AGENTS.md`
   nel file di istruzioni del tuo strumento. Nessun blocco automatico: valgono
   solo le regole scritte.
@@ -47,9 +49,11 @@ da aggirare: se scatta, ferma il lavoro e spiega all'utente.
 
 ## Configurazione per progetto
 
-Un file `.guardrail.json` nella root del repo dice al hook quali server MCP sono
-produzione, quali pattern identificano la produzione nei comandi e quali comandi
-del progetto sono vietati. Esempio in [`examples/esempio.guardrail.json`](examples/esempio.guardrail.json).
+Un file `.guardrail.json` nella root del repo accende guardrail in quel progetto
+(anche vuoto, `{}`) e dice al hook quali server MCP sono produzione, quali pattern
+identificano la produzione nei comandi e quali comandi del progetto sono vietati.
+Toglierlo spegne guardrail: lo fa l'utente, mai l'agente. Esempio in
+[`examples/esempio.guardrail.json`](examples/esempio.guardrail.json).
 
 ## Contribuire
 

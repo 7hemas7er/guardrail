@@ -8,7 +8,21 @@ Un hook che non parte non fa rumore: nessun blocco, nessun errore, nessuna
 protezione. Questo comando lo mette alla prova con tre azioni **innocue** che il
 hook deve fermare. Se passano, guardrail non sta girando.
 
-Esegui i tre passi nell'ordine, uno per volta, e annota cosa succede a ciascuno.
+Esegui i passi nell'ordine, uno per volta, e annota cosa succede a ciascuno.
+
+## 0. Guardrail è acceso in questo progetto?
+
+Guardrail controlla solo i progetti che l'hanno scelto: quelli con un
+`.guardrail.json` nella root o in una directory superiore, esclusa la home (lì
+stanno le liste comuni, che da sole non accendono niente). Cercalo:
+
+```
+d=$PWD; while :; do [ "$d" != "$HOME" ] && [ -f "$d/.guardrail.json" ] && echo "$d/.guardrail.json"; [ "$d" = / ] && break; d=$(dirname "$d"); done
+```
+
+Se non trova niente, guardrail qui è **spento per scelta**, non guasto: i
+canarini passerebbero tutti. Non lanciarli. Dillo in testa al messaggio, indica
+`/guardrail:setup` per accenderlo e salta al passo 4.
 
 ## 1. Canarino sulla shell
 
@@ -66,8 +80,8 @@ Riporta anche, senza modificarli:
 
 ## 5. Esito
 
-Una tabella a quattro righe — shell, Read, MCP, ambiente — con **attivo** /
-**non attivo** / **saltato** e una riga di spiegazione. Se anche un solo
+Una tabella a cinque righe — progetto, shell, Read, MCP, ambiente — con
+**attivo** / **non attivo** / **saltato** e una riga di spiegazione. Se anche un solo
 canarino è passato, dillo in testa al messaggio, prima della tabella: chi legge
 deve saperlo subito.
 

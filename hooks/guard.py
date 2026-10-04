@@ -24,8 +24,11 @@ segnaposto nell'input dei tool, fa passare ogni comando Bash dal runner di
 mascheramento e nega i tool il cui risultato non si può mascherare (vedi
 hooks/mask.py). Senza la mappa, nessuna differenza.
 
-La configurazione per repo sta in `.guardrail.json` (cercato dalla cwd verso l'alto)
-e in `~/.guardrail.json`; le liste si sommano. Vedi README.md.
+Guardrail vale solo nei progetti che l'hanno scelto: quelli con un `.guardrail.json`
+nella root o in una directory superiore (vedi `attivo`). Altrove il hook lascia
+passare tutto, tranne il mascheramento, che segue la mappa e non il progetto.
+Le liste di `.guardrail.json` si sommano a quelle di `~/.guardrail.json`, che però
+non accende niente da solo. Vedi README.md.
 
 Solo libreria standard. Nessuna dipendenza, nessuna rete.
 """
@@ -215,8 +218,39 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def config_progetto(start: str) -> Path | None:
+    """Il .guardrail.json che vale per `start`: il primo risalendo verso la radice.
+
+    Quello nella home non conta: sono le liste comuni dell'utente, e se valesse come
+    configurazione di progetto accenderebbe guardrail in ogni cartella sotto la home.
+    """
+    if not start:
+        return None
+    try:
+        current = Path(start).resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+    for candidate in [current, *current.parents]:
+        probe = candidate / ".guardrail.json"
+        if candidate != home and probe.is_file():
+            return probe
+    return None
+
+
+def attivo(cwd: str) -> bool:
+    """Guardrail è acceso qui? Solo dove un .guardrail.json lo dice.
+
+    Basta che ce l'abbia la directory di lavoro o il progetto da cui è partita la
+    sessione (CLAUDE_PROJECT_DIR): un `cd` fuori dal progetto non lo spegne.
+    """
+    if os.environ.get("GUARDRAIL_CONFIG"):
+        return True
+    return any(config_progetto(start) for start in (cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")))
+
+
 def load_config(cwd: str) -> dict:
-    """Unisce default, ~/.guardrail.json e il primo .guardrail.json trovato risalendo da cwd."""
+    """Unisce default, ~/.guardrail.json e il .guardrail.json del progetto."""
     config = {key: list(value) for key, value in DEFAULT_CONFIG.items()}
 
     sources: list[Path] = []
@@ -225,12 +259,9 @@ def load_config(cwd: str) -> dict:
         sources.append(Path(override))
     else:
         sources.append(Path.home() / ".guardrail.json")
-        current = Path(cwd or os.getcwd()).resolve()
-        for candidate in [current, *current.parents]:
-            probe = candidate / ".guardrail.json"
-            if probe.is_file():
-                sources.append(probe)
-                break
+        progetto = config_progetto(cwd or os.getcwd()) or config_progetto(os.environ.get("CLAUDE_PROJECT_DIR", ""))
+        if progetto:
+            sources.append(progetto)
 
     for source in sources:
         for key, value in _read_json(source).items():
@@ -506,8 +537,37 @@ def check_secret_reads(text: str) -> None:
             ask(f"scrittura da shell su un file di segreti ({name}). Conferma che è voluto e che il file è gitignorato.")
 
 
+def removed_paths(segment: str) -> list[str]:
+    """I file che il comando toglie dal loro posto: rm e unlink, la sorgente di mv, git rm/mv."""
+    tokens = shell_tokens(segment)
+    while tokens and COMMAND_PREFIX.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return []
+    command, args = os.path.basename(tokens[0]), tokens[1:]
+    if command == "git":
+        while args and args[0].startswith("-"):
+            args = args[2:] if args[0] in ("-C", "-c") else args[1:]
+        if not args:
+            return []
+        command, args = args[0], args[1:]
+    operands = [a for a in args if not a.startswith("-")]
+    if command in ("rm", "unlink", "shred"):
+        return operands
+    if command == "mv":
+        return operands if any(a in ("-t", "--target-directory") for a in args) else operands[:-1]
+    return []
+
+
 def check_protected_writes(text: str) -> None:
     for segment in shell_segments(text):
+        tolto = next((p for p in removed_paths(segment) if Path(p).name == ".guardrail.json"), None)
+        if tolto:
+            deny(
+                f"rimozione di {tolto}: è il file che accende guardrail in questo progetto, toglierlo lo "
+                "spegne. Spegnerlo è una decisione dell'utente, che lo fa da sé. Se una regola ti blocca a "
+                "torto, spiegalo all'utente. (guardrail: RULES-CORE.md 8)"
+            )
         for target in write_targets(segment):
             match = PROTECTED_PATH.search(target)
             if not match:
@@ -1410,6 +1470,13 @@ def main() -> int:
     if bloccato:
         log_decision(payload, "deny", bloccato)
         emit("deny", bloccato)
+        return 0
+
+    # Fuori dai progetti che l'hanno scelto nessun controllo, e nessun log: lo
+    # segnala session-start.py all'apertura della sessione. Il mascheramento, sopra,
+    # vale lo stesso: un termine riservato non diventa pubblico in un'altra cartella.
+    if not attivo(cwd):
+        emit(updated_input=riscritto)
         return 0
 
     if os.environ.get("GUARDRAIL_DISABLE") == "1":

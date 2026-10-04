@@ -1,11 +1,15 @@
 ---
-description: Configura guardrail per questo progetto — deduce cosa è produzione, propone .guardrail.json e verifica le impostazioni di Claude Code
+description: Attiva e configura guardrail per questo progetto — deduce cosa è produzione, propone .guardrail.json e verifica le impostazioni di Claude Code
 ---
 
 # Configurare guardrail per questo progetto
 
 Il tuo compito è produrre un `.guardrail.json` corretto per il repo corrente e
 segnalare le impostazioni mancanti. **Non scrivi niente senza mostrarlo prima.**
+
+Quel file è anche ciò che **accende** guardrail qui: senza, il hook non controlla
+niente in questo progetto e le regole essenziali non entrano nel contesto. Se
+l'utente non vuole guardrail in questo progetto, fermati: la scelta è sua.
 
 ## 1. Raccogli le prove
 
@@ -54,9 +58,20 @@ e poi il `.guardrail.json` completo:
 }
 ```
 
-Chiedi conferma esplicita prima di scrivere. La scrittura farà scattare una
-richiesta di conferma del hook: è voluto, è la garanzia che questo file non
-cambi senza che l'utente lo veda.
+Se non hai trovato niente da classificare (nessun server MCP, nessun host,
+nessuno script di deploy), proponi il file minimo: accende guardrail con le
+regole di base.
+
+```json
+{
+  "_commento": "Nessuna produzione raggiungibile da qui: bastano le regole di base."
+}
+```
+
+Chiedi conferma esplicita prima di scrivere. Se il file esiste già, la scrittura
+fa scattare una conferma del hook: è voluto, è la garanzia che questo file non
+cambi senza che l'utente lo veda. Se lo stai creando, il hook qui è ancora
+spento e non chiede niente: la conferma dell'utente è l'unica garanzia.
 
 **Non proporre mai `allow_commands`.** È l'eccezione che disattiva le regole: la
 aggiunge un umano, motivandola nel messaggio di commit.
@@ -105,4 +120,9 @@ che via shell: non servono più voci in `permissions.deny`.
 ## 5. Chiudi
 
 Ricorda all'utente di committare `.guardrail.json`: è parte del repo, va rivisto
-come si rivede il codice, e vale per chiunque ci lavori — persone e agenti.
+come si rivede il codice, e vale per chiunque ci lavori — persone e agenti. Una
+volta committato accende guardrail anche per i colleghi che hanno il plugin; se
+l'utente lo vuole solo per sé, va in `.git/info/exclude` invece che nel commit.
+
+Digli anche cosa cambia da subito: il hook controlla già il prossimo comando, le
+regole essenziali entrano nel contesto dalla prossima sessione.

@@ -91,7 +91,14 @@
 {"name": "cp .env.example .env (scrittura di segreti da shell)", "tool_name": "Bash", "tool_input": {"command": "cp .env.example .env"}, "expect": "ask"}
 {"name": "redirect su .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "echo '{\"allow_commands\": [\".*\"]}' > .guardrail.json"}, "expect": "ask"}
 {"name": "sed -i su .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "sed -i 's/deny_commands/x/' .guardrail.json"}, "expect": "ask"}
-{"name": "rm .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "rm .guardrail.json"}, "expect": "ask"}
+{"name": "rm .guardrail.json: lo spegne, decide l'utente", "tool_name": "Bash", "tool_input": {"command": "rm .guardrail.json"}, "expect": "deny", "reason_contains": "spegne"}
+{"name": "mv .guardrail.json altrove: lo spegne", "tool_name": "Bash", "tool_input": {"command": "mv .guardrail.json /tmp/x.json"}, "expect": "deny"}
+{"name": "mv -t con .guardrail.json come sorgente", "tool_name": "Bash", "tool_input": {"command": "mv -t /tmp .guardrail.json"}, "expect": "deny"}
+{"name": "git rm .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "git rm .guardrail.json"}, "expect": "deny"}
+{"name": "git rm --cached di una sottocartella", "tool_name": "Bash", "tool_input": {"command": "git -C sub rm --cached sub/.guardrail.json"}, "expect": "deny"}
+{"name": "unlink .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "unlink .guardrail.json"}, "expect": "deny"}
+{"name": "mv verso .guardrail.json: modifica, conferma", "tool_name": "Bash", "tool_input": {"command": "mv nuovo.json .guardrail.json"}, "expect": "ask"}
+{"name": "cp di .guardrail.json altrove: lettura", "tool_name": "Bash", "tool_input": {"command": "cp .guardrail.json /tmp/copia.json"}, "expect": "allow"}
 {"name": "cat .guardrail.json: ok", "tool_name": "Bash", "tool_input": {"command": "cat .guardrail.json"}, "expect": "allow"}
 {"name": "tee sulle settings di Claude Code", "tool_name": "Bash", "tool_input": {"command": "cat nuove.json | tee ~/.claude/settings.json"}, "expect": "ask"}
 {"name": "cp sul codice del plugin", "tool_name": "Bash", "tool_input": {"command": "cp guard.py ~/.claude/plugins/cache/7hemas7er-guardrail/guardrail/0.2.0/hooks/guard.py"}, "expect": "deny"}

@@ -46,7 +46,11 @@ Chi pubblica una modifica deve **pushare su `main` e alzare la versione** in
 nessuno la riceve, e senza versione nuova l'aggiornamento non ha nulla da
 installare.
 
-Cosa ottieni:
+Il plugin si installa una volta per macchina, ma **si accende per progetto**: dove
+non lo attivi non controlla niente e non aggiunge niente al contesto (vedi
+[Attivarlo per progetto](#attivarlo-per-progetto)).
+
+Cosa ottieni, in ogni progetto attivo:
 
 - a ogni sessione, le regole essenziali (`RULES-CORE.md`) entrano nel contesto;
 - ogni comando Bash, lettura e scrittura di file e query MCP passa dal hook
@@ -55,13 +59,24 @@ Cosa ottieni:
   esito che la modalità auto non può scavalcare);
 - la skill `guardrail`, che carica le regole del servizio interessato;
 - quattro comandi: `/guardrail:check` (il hook è davvero attivo?),
-  `/guardrail:setup` (configura il repo corrente), `/guardrail:log` (cosa è stato
-  bloccato, e perché), `/guardrail:approve` (approva uno script e ne registra
-  l'impronta);
+  `/guardrail:setup` (attiva e configura il repo corrente), `/guardrail:log` (cosa
+  è stato bloccato, e perché), `/guardrail:approve` (approva uno script e ne
+  registra l'impronta);
 - facoltativo, il mascheramento dei termini riservati: si accende creando una
-  mappa (vedi [Mascheramento dei termini riservati](#mascheramento-dei-termini-riservati)).
+  mappa, e vale in ogni cartella, attiva o no (vedi [Mascheramento dei termini
+  riservati](#mascheramento-dei-termini-riservati)).
 
-Subito dopo l'installazione, in una sessione nuova:
+Dopo l'installazione, in una sessione nuova aperta nel progetto da proteggere:
+
+```
+/guardrail:setup
+```
+
+L'agente guarda `.mcp.json`, gli script di deploy e la CI, deduce quali server e
+host sono produzione, e ti propone il `.guardrail.json` da committare. Non scrive
+niente senza mostrartelo. È quel file ad accendere guardrail nel progetto.
+
+Poi verifica:
 
 ```
 /guardrail:check
@@ -71,20 +86,40 @@ Lancia tre azioni innocue che il hook deve fermare e ti dice se lo ha fatto. Un
 hook che non parte non fa rumore: senza questa verifica non sai di non essere
 protetto.
 
-Poi, nel primo progetto che lo richiede:
-
-```
-/guardrail:setup
-```
-
-L'agente guarda `.mcp.json`, gli script di deploy e la CI, deduce quali server e
-host sono produzione, e ti propone il `.guardrail.json` da committare. Non scrive
-niente senza mostrartelo, e la scrittura passa comunque da una conferma.
-
 Resta una sola cosa da fare a mano, una volta per macchina: accendere il sandbox
 in `~/.claude/settings.json` (vedi `examples/settings.example.json`). È l'unica
 protezione che nessun hook può attivare al posto tuo. Se manca, guardrail te lo
-segnala all'inizio della prima sessione.
+segnala all'inizio della prima sessione in un progetto attivo.
+
+## Attivarlo per progetto
+
+Guardrail è acceso dove c'è un `.guardrail.json`: nella root del progetto, oppure
+in una directory superiore, che così lo accende per tutti i progetti sotto di sé
+(`~/repos/cliente/.guardrail.json` vale per ogni repo del cliente). Fa eccezione
+`~/.guardrail.json`: contiene le liste comuni a tutti i progetti attivi, e da solo
+non accende niente, altrimenti varrebbe per ogni cartella della home.
+
+| Vuoi… | Fai |
+|---|---|
+| accenderlo con la configurazione giusta | `/guardrail:setup` |
+| accenderlo con le sole regole di base | un `.guardrail.json` con `{}` nella root |
+| accenderlo solo per te, non per i colleghi | come sopra, e il file in `.git/info/exclude` invece che nel commit |
+| spegnerlo | togli tu il `.guardrail.json`: l'agente non può |
+
+Quando Claude parte in una cartella senza `.guardrail.json`, alla prima sessione
+l'agente ti dice che guardrail lì è spento e come accenderlo, citando
+`.mcp.json`, `docker-compose` o `scripts/deploy` se ci sono. Se lo lasci spento,
+l'avviso non si ripete per quella cartella: è una scelta, non una dimenticanza da
+ricordarti ogni volta. Lo stato degli avvisi sta in `~/.claude/guardrail.state.json`;
+togliere la voce `inattivo:<cartella>` lo fa ricomparire.
+
+Vale il progetto da cui è partita la sessione e la directory di lavoro del
+comando: basta che una delle due sia attiva, quindi un `cd` fuori dal progetto non
+spegne niente. Togliere `.guardrail.json` (`rm`, `mv`, `git rm`) è bloccato: è il
+modo di spegnere guardrail, e quella decisione resta all'utente.
+
+⚠️ Fino alla 0.9.x guardrail era acceso ovunque. Dopo l'aggiornamento, i progetti
+senza `.guardrail.json` restano scoperti finché non lo aggiungi.
 
 ## Configurazione per progetto
 
@@ -140,8 +175,9 @@ anche dentro uno script approvato, e l'esenzione vale solo per la scansione del
 contenuto, non per il comando che lo lancia (`rm -rf "$X" && bash build.sh`
 resta bloccato).
 
-Le liste si sommano con `~/.guardrail.json`, se esiste. `GUARDRAIL_CONFIG=<file>`
-sostituisce entrambi (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
+Le liste si sommano con `~/.guardrail.json`, se esiste, che però non accende
+guardrail da solo (vedi sopra). `GUARDRAIL_CONFIG=<file>` sostituisce entrambi e
+accende guardrail ovunque (usato dai test). `GUARDRAIL_DISABLE=1` spegne il hook: la
 scelta viene registrata nel log.
 
 ## Mascheramento dei termini riservati
@@ -271,6 +307,7 @@ dello strumento. Solo prosa: nessun blocco automatico.
 
 ```
 python3 tests/run.py                  # casi del hook guard.py, deve restare verde
+python3 tests/test_attivazione.py     # acceso solo dove c'è .guardrail.json
 python3 tests/test_session_start.py   # regole iniettate e avvisi una tantum
 python3 tests/test_mask.py            # mascheramento: comandi eseguiti davvero, risultati riscritti
 ```
@@ -303,11 +340,11 @@ verifica con `python3 tests/run.py`, che gira sul `guard.py` locale.
 
 ```
 AGENTS.md                 indice e regole per ogni agente
-RULES-CORE.md             le 9 regole essenziali, iniettate a ogni sessione
+RULES-CORE.md             le 9 regole essenziali, iniettate a ogni sessione nei progetti attivi
 CLAUDE.md                 importa i due file sopra per Claude Code
 services/                 regole per tipologia di servizio
 hooks/guard.py            hook PreToolUse: allow / ask / deny, e input riscritto per il mascheramento
-hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md
+hooks/session-start.py    hook SessionStart: inietta RULES-CORE.md nei progetti attivi, avvisa negli altri
 hooks/mask.py             mascheramento dei termini riservati: runner, hook PostToolUse e UserPromptSubmit
 hooks/hooks.json          registrazione dei hook nel plugin
 skills/guardrail/         skill che carica il file di servizio giusto
