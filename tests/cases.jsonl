@@ -277,8 +277,13 @@
 {"name": "heredoc Python con create_subprocess_shell: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport asyncio\nasyncio.run(asyncio.create_subprocess_shell('''\nrm -rf ~\n'''))\nPY"}, "expect": "deny"}
 {"name": "heredoc Python con accesso dinamico (getattr): il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport os\ngetattr(os, 'sys' + 'tem')('''\nrm -rf ~\n''')\nPY"}, "expect": "deny"}
 {"name": "heredoc Python dopo cd e &&: il corpo resta codice", "tool_name": "Bash", "tool_input": {"command": "cd docs && python3 - <<'PY'\ns = '''\nrm -rf ~\n'''\nPY"}, "expect": "allow"}
-{"name": "heredoc Ruby: il corpo resta analizzato","tool_name": "Bash", "tool_input": {"command": "ruby - <<'RB'\nputs '\nrm -rf ~\n'\nRB"}, "expect": "deny"}
+{"name": "heredoc Ruby: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "ruby - <<'RB'\nputs '\nrm -rf ~\n'\nRB"}, "expect": "deny"}
 {"name": "falso positivo 2026-10-04: node -e che legge un file sotto .claude/plugins", "tool_name": "Bash", "tool_input": {"command": "node -e 'console.log(require(process.env.HOME+\"/.claude/plugins/known_marketplaces.json\"))'"}, "expect": "allow"}
+{"name": "heredoc a bash dentro $( ) sulla riga di python: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 $(bash <<'EOF'\nrm -rf ~\nEOF\n)"}, "expect": "deny"}
+{"name": "heredoc a bash dentro <( ) sulla riga di python: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "python3 - <(bash <<'EOF'\nrm -rf ~\nEOF\n)"}, "expect": "deny"}
+{"name": "heredoc a bash fra backtick sulla riga di node: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "node `bash <<'EOF'\nrm -rf ~\nEOF\n`"}, "expect": "deny"}
+{"name": "tee verso una process substitution di bash: non e' un heredoc di dati", "tool_name": "Bash", "tool_input": {"command": "tee >(bash) <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "cat verso una process substitution di bash: non e' un heredoc di dati", "tool_name": "Bash", "tool_input": {"command": "cat > >(bash) <<'EOF'\nrm -rf ~\nEOF"}, "expect": "deny"}
 {"name": "python -c che legge .guardrail.json: ok", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json; print(json.load(open('.guardrail.json')))\""}, "expect": "allow"}
 {"name": "node -e che scrive le settings: conferma", "tool_name": "Bash", "tool_input": {"command": "node -e 'require(\"fs\").writeFileSync(\".claude/settings.json\", \"{}\")'"}, "expect": "ask"}
 {"name": "python -c che apre .guardrail.json in scrittura: conferma", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"open('.guardrail.json', 'w').write('{}')\""}, "expect": "ask"}
