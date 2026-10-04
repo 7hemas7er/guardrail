@@ -117,9 +117,17 @@ queste regole vengono prima di `allow_commands`, che non le esenta.
 
 **Limite dichiarato**: sono espressioni regolari su un comando di shell, e una
 variante che non prevedono si trova sempre. Un interprete che non è una shell
-(`python3 -c "os.remove(…)"`) resta fuori, come per ogni altra regola; un
+resta fuori, come per ogni altra regola, salvo il caso descritto sopra; un
 `.guardrail.json` più profondo di due livelli sotto la cartella cancellata non
 viene cercato. Proteggono da un agente che sbaglia, non da uno che cerca il buco.
+
+Una copia del progetto in una cartella temporanea (`/tmp`, `$TMPDIR`) e fuori
+dalla home — un `git checkout-index`, un `git archive`, un `cp -r` nello
+scratchpad — si porta dietro `.guardrail.json` e `.claude/`, che lì non accendono
+né configurano niente: toglierla o riscriverne le settings non chiede niente. Il
+controllo torna se la sessione ci lavora dentro (directory di lavoro o progetto
+della sessione). Il path deve essere letterale: `rm -rf "$T"` non si sa dove
+porta, e resta bloccato.
 
 L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
 directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede
