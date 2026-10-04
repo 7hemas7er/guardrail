@@ -1313,6 +1313,16 @@ MCP_MUTATING = re.compile(
 )
 
 
+# Tool di documentazione (context7: query-docs, resolve-library-id): il loro
+# `query` è una domanda in linguaggio naturale, e "with line and column" non è
+# una CTE. Classificarla come SQL dava "non classificabile" (2026-10-01/04).
+# Restano soggetti alle regole generiche dei tool MCP qui sotto.
+MCP_DOCS_TOOL = re.compile(r"(?:^|[_-])(?:docs?|documentation|librar(?:y|ies))(?:$|[_-])", re.I)
+# Chiudere il browser di prova o una sua scheda non cancella niente: Playwright
+# (browser_close, browser_tabs con action=close), Chrome DevTools (close_page).
+MCP_BROWSER_CLOSE = re.compile(r"\b(?:browser|page|tabs?)\s+close\b|\bclose\s+(?:browser|page|tabs?)\b", re.I)
+
+
 def extract_sql(tool_input: dict) -> str:
     for key in ("sql", "query", "statement", "command", "text"):
         value = tool_input.get(key)
@@ -1343,7 +1353,12 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     # autorizza è "lettura": una query di sola lettura resta permessa ovunque,
     # produzione compresa, anche quando un valore confrontato contiene un verbo
     # di scrittura. Tutto il resto si mostra a chi deve decidere.
-    if sql and re.search(r"(query|sql|execute|run|statement)", tool, re.I) and SQL_KEYWORD.search(sql):
+    if (
+        sql
+        and re.search(r"(query|sql|execute|run|statement)", tool, re.I)
+        and not MCP_DOCS_TOOL.search(tool)
+        and SQL_KEYWORD.search(sql)
+    ):
         verdetto = classifica_sql(sql)
         if verdetto == "lettura":
             return
@@ -1385,7 +1400,7 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     # bersaglio è produzione.
     if MCP_READ_TOOL.match(tool):
         return
-    operation = mcp_operation_text(tool, tool_input)
+    operation = MCP_BROWSER_CLOSE.sub(" ", mcp_operation_text(tool, tool_input))
     parameters = json.dumps(tool_input, ensure_ascii=False)
     targets_prod = is_prod or matches_any(config["prod_patterns"], parameters) is not None
 
