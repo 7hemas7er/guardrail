@@ -247,6 +247,19 @@
 {"name": "MCP prod pg_terminate_backend non e' una lettura: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT pg_terminate_backend(12345)"}, "expect": "deny"}
 {"name": "MCP prod SELECT INTO OUTFILE scrive un file: deny", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT * FROM utenti INTO OUTFILE '/tmp/utenti.csv'"}, "expect": "deny"}
 {"name": "MCP prod lettura con funzioni normali: ok", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "SELECT count(*), max(creato_il) FROM utenti WHERE attivo"}, "expect": "allow"}
+{"name": "falso positivo 2026-09-28: process.env.HOME non e' il file .env.HOME", "tool_name": "Bash", "tool_input": {"command": "node -e 'require(process.env.HOME+\"/x\")'"}, "expect": "allow"}
+{"name": "falso positivo 2026-10-03: os.environ nel valore di sed -e non e' un file", "tool_name": "Bash", "tool_input": {"command": "sed -e \"s#base=x#base=(os.environ['BASE_URL'])#\" a.py > b.py"}, "expect": "allow"}
+{"name": "falso positivo 2026-10-03: os.environ in un pattern di sed spezzato dalle parentesi", "tool_name": "Bash", "tool_input": {"command": "sed -i 's/for d in diffs/for d in diffs[:int(os.environ.get(\"N\",\"12\"))]/' x.py; N=2 timeout 500 python3 x.py"}, "expect": "allow"}
+{"name": "falso positivo 2026-09-28: timeout davanti a grep, il pattern non e' un file", "tool_name": "Bash", "tool_input": {"command": "timeout 60 grep -a -o \"process\\.env\\.HOME\" bin"}, "expect": "allow"}
+{"name": "grep -e con un pattern che cita .env: il valore di -e e' il pattern", "tool_name": "Bash", "tool_input": {"command": "grep -n -e '\\.env' tests/cases.jsonl"}, "expect": "allow"}
+{"name": "grep -f .env legge il file dei pattern: resta un segreto", "tool_name": "Bash", "tool_input": {"command": "grep -f .env config/app.php"}, "expect": "deny"}
+{"name": ".env dopo $VAR/ resta un file di segreti", "tool_name": "Bash", "tool_input": {"command": "cat \"$D/.env\""}, "expect": "deny"}
+{"name": ".envrc resta un file di segreti", "tool_name": "Bash", "tool_input": {"command": "cat .envrc"}, "expect": "deny"}
+{"name": "timeout davanti a cat .env non lo nasconde", "tool_name": "Bash", "tool_input": {"command": "timeout 5 cat app/.env.local"}, "expect": "deny"}
+{"name": "timeout davanti a rm -rf su variabile non lo nasconde", "tool_name": "Bash", "tool_input": {"command": "timeout 60 rm -rf \"$X\""}, "expect": "deny"}
+{"name": "timeout con opzioni davanti a rm -rf di un path letterale: ok", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 rm -rf build"}, "expect": "allow"}
+{"name": "timeout con opzioni davanti a psql verso prod", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 psql -h db-produzione.esempio.com -c \"DELETE FROM t WHERE id = 1\""}, "expect": "deny"}
+{"name": "timeout davanti a bash -c: la stringa resta analizzata", "tool_name": "Bash", "tool_input": {"command": "timeout 10 bash -c 'rm -rf \"$X\"'"}, "expect": "deny"}
 # --- mascheramento dei termini riservati (hooks/mask.py) ---
 {"name": "senza mappa il comando non si tocca", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "expect": "allow", "rewritten": false}
 {"name": "con la mappa il comando passa dal runner", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "allow", "rewritten": true, "rewritten_excludes": ["magazzino"]}
