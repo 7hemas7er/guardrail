@@ -848,14 +848,16 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
 # che segue il tag di chiusura restano comunque analizzati, in ogni caso.
 # Il comando che riceve l'heredoc dev'essere `cat` con una redirezione, `tee`, o
 # git/gh, nello stesso segmento: in `echo x > /dev/null; bash <<'EOF'` la
-# redirezione è di echo, e il corpo lo esegue bash.
+# redirezione è di echo, e il corpo lo esegue bash. Fra il comando e `<<` niente
+# `(` né backtick (qui e in HEREDOC_INTERPRETER): in `tee >(bash) <<EOF` e in
+# `python3 $(bash <<EOF …)` l'heredoc lo legge, o lo esegue, una shell.
 HEREDOC_DATA_HEAD = (
-    r"(?:cat\b[^\n;&|<]*>|tee\b"
+    r"(?:cat\b[^\n;&|<(`]*>|tee\b"
     r"|(?:git|gh)\b[^\n;&|]*?(?:--body-file|--notes-file|--file|-F)[=\s]+-(?=\s))"
 )
 HEREDOC = re.compile(
     r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?" + HEREDOC_DATA_HEAD
-    + r"[^\n;&|]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    + r"[^\n;&|(`]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
@@ -885,7 +887,7 @@ HEREDOC = re.compile(
 # progetto devono vederlo.
 HEREDOC_INTERPRETER = re.compile(
     r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?(?:[\w./~-]*/)?(?P<interp>python[\d.]*|node|ruby|perl|php|Rscript)(?=[\s<])"
-    r"[^\n;&|]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"[^\n;&|(`]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
