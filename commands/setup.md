@@ -68,10 +68,9 @@ regole di base.
 }
 ```
 
-Chiedi conferma esplicita prima di scrivere. Se il file esiste già, la scrittura
-fa scattare una conferma del hook: è voluto, è la garanzia che questo file non
-cambi senza che l'utente lo veda. Se lo stai creando, il hook qui è ancora
-spento e non chiede niente: la conferma dell'utente è l'unica garanzia.
+Chiedi conferma esplicita prima di scrivere. La scrittura farà scattare una
+richiesta di conferma del hook, anche se guardrail qui è ancora spento: è
+voluto, è la garanzia che questo file non cambi senza che l'utente lo veda.
 
 **Non proporre mai `allow_commands`.** È l'eccezione che disattiva le regole: la
 aggiunge un umano, motivandola nel messaggio di commit.

@@ -25,8 +25,9 @@ mascheramento e nega i tool il cui risultato non si può mascherare (vedi
 hooks/mask.py). Senza la mappa, nessuna differenza.
 
 Guardrail vale solo nei progetti che l'hanno scelto: quelli con un `.guardrail.json`
-nella root o in una directory superiore (vedi `attivo`). Altrove il hook lascia
-passare tutto, tranne il mascheramento, che segue la mappa e non il progetto.
+nella root o in una directory superiore (vedi `attivo`). Altrove valgono solo le
+regole che proteggono guardrail stesso (la sua configurazione, il suo codice, le
+impostazioni di Claude Code) e il mascheramento, che segue la mappa e non il progetto.
 Le liste di `.guardrail.json` si sommano a quelle di `~/.guardrail.json`, che però
 non accende niente da solo. Vedi README.md.
 
@@ -1340,19 +1341,12 @@ def is_inside(path: Path, root: Path | None) -> bool:
         return False
 
 
-def check_write(tool_input: dict, cwd: str) -> None:
-    path = target_path(tool_input)
-    if path is None:
-        return
+def check_write_guardrail(path: Path) -> None:
+    """Scritture su guardrail stesso: il suo codice, la sua configurazione, le
+    impostazioni di Claude Code. Valgono anche dove guardrail è spento (vedi `decide`)."""
     raw = str(path)
     name = path.name
     in_home = relative_to_home(path)
-
-    # Blocchi secchi
-    if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$|\.p12$|\.pfx$", name)):
-        deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
-    if str(path).startswith("/etc/") or str(path).startswith("/usr/"):
-        deny(f"scrittura su un file di sistema ({raw}).")
     if in_home is not None and in_home.parts[:1] == (".claude",) and len(in_home.parts) > 2 and in_home.parts[1] in CLAUDE_HOME_CODE_DIRS:
         deny(
             f"scrittura in ~/.claude/{in_home.parts[1]} ({raw}): è il codice dei hook e dei plugin, cioè di "
@@ -1374,6 +1368,32 @@ def check_write(tool_input: dict, cwd: str) -> None:
             f"modifica della configurazione di Claude Code ({raw}): tocca permessi, hook, comandi o "
             "istruzioni dell'utente. Mostra il cambiamento e fallo approvare."
         )
+
+
+def check_bash_guardrail(cmd: str, depth: int = 0) -> None:
+    """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
+    .guardrail.json; anche dentro `bash -c "…"`."""
+    text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+    check_protected_writes(text)
+    if depth < MAX_DEPTH:
+        for payload in inline_shell_payloads(text):
+            check_bash_guardrail(payload, depth + 1)
+
+
+def check_write(tool_input: dict, cwd: str) -> None:
+    path = target_path(tool_input)
+    if path is None:
+        return
+    raw = str(path)
+    name = path.name
+    in_home = relative_to_home(path)
+
+    # Blocchi secchi
+    if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$|\.p12$|\.pfx$", name)):
+        deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
+    if str(path).startswith("/etc/") or str(path).startswith("/usr/"):
+        deny(f"scrittura su un file di sistema ({raw}).")
+    check_write_guardrail(path)
     if is_secret_path(path):
         ask(f"scrittura su un file di segreti ({raw}). Conferma che è voluto e che il file è gitignorato.")
     if in_home is not None and len(in_home.parts) == 1 and in_home.parts[0].startswith("."):
@@ -1403,6 +1423,20 @@ def decide(payload: dict) -> None:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     cwd = str(payload.get("cwd") or "")
+
+    # Dove guardrail è spento valgono solo le regole che proteggono guardrail stesso.
+    # Senza, una sessione aperta in una cartella qualunque potrebbe spegnerlo o
+    # allentarlo nei progetti dove è acceso: togliendo il loro .guardrail.json,
+    # scrivendo allow_commands in ~/.guardrail.json, toccando il codice del plugin.
+    if not attivo(cwd):
+        if tool == "Bash":
+            check_bash_guardrail(str(tool_input.get("command", "")))
+        elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            path = target_path(tool_input)
+            if path is not None:
+                check_write_guardrail(path)
+        return
+
     config = load_config(cwd)
 
     if tool == "Bash":
@@ -1470,13 +1504,6 @@ def main() -> int:
     if bloccato:
         log_decision(payload, "deny", bloccato)
         emit("deny", bloccato)
-        return 0
-
-    # Fuori dai progetti che l'hanno scelto nessun controllo, e nessun log: lo
-    # segnala session-start.py all'apertura della sessione. Il mascheramento, sopra,
-    # vale lo stesso: un termine riservato non diventa pubblico in un'altra cartella.
-    if not attivo(cwd):
-        emit(updated_input=riscritto)
         return 0
 
     if os.environ.get("GUARDRAIL_DISABLE") == "1":

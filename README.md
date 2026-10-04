@@ -118,6 +118,13 @@ comando: basta che una delle due sia attiva, quindi un `cd` fuori dal progetto n
 spegne niente. Togliere `.guardrail.json` (`rm`, `mv`, `git rm`) è bloccato: è il
 modo di spegnere guardrail, e quella decisione resta all'utente.
 
+Dove è spento, guardrail tiene comunque le regole che proteggono sé stesso: la
+rimozione di un `.guardrail.json` (bloccata), le scritture su un `.guardrail.json`
+o su `~/.guardrail.json` e sulle impostazioni di Claude Code (in conferma), sul
+codice dei plugin in `~/.claude/plugins` (bloccate). Altrimenti una sessione
+aperta in una cartella qualunque potrebbe spegnerlo, o allentarlo con un
+`allow_commands` in `~/.guardrail.json`, nei progetti dove è acceso.
+
 ⚠️ Fino alla 0.9.x guardrail era acceso ovunque. Dopo l'aggiornamento, i progetti
 senza `.guardrail.json` restano scoperti finché non lo aggiungi.
 

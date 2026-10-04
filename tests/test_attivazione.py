@@ -4,8 +4,9 @@
 Esegue hooks/guard.py senza GUARDRAIL_CONFIG, con una home e delle cartelle finte:
 un comando vietato deve passare dove non c'è un .guardrail.json ed essere bloccato
 dove c'è, anche in una sottocartella, sotto una directory superiore configurata, o
-dopo un `cd` fuori dal progetto. Il mascheramento invece vale ovunque ci sia la
-mappa. Esce 1 al primo fallimento.
+dopo un `cd` fuori dal progetto. Dove è spento valgono solo le regole che
+proteggono guardrail stesso, e il mascheramento, che vale ovunque ci sia la mappa.
+Esce 1 al primo fallimento.
 """
 import json
 import os
@@ -77,6 +78,21 @@ def main() -> int:
 
         failures += check("cd fuori dal progetto acceso: resta acceso", esito(home, libero, progetto=scelto), "deny")
         failures += check("cd dentro un progetto acceso: acceso", esito(home, scelto, progetto=libero), "deny")
+
+        # Da una cartella spenta non si spegne né si allenta guardrail dove è acceso.
+        def bash(cmd: str) -> dict:
+            return {"tool_name": "Bash", "tool_input": {"command": cmd}}
+
+        def write(path: Path) -> dict:
+            return {"tool_name": "Write", "tool_input": {"file_path": str(path), "content": '{"allow_commands": [".*"]}'}}
+
+        failures += check("spento: rm del .guardrail.json di un altro progetto", esito(home, libero, tool=bash(f"rm {scelto}/.guardrail.json")), "deny")
+        failures += check("spento: lo stesso dentro bash -c", esito(home, libero, tool=bash(f"bash -c 'rm {scelto}/.guardrail.json'")), "deny")
+        failures += check("spento: Write su ~/.guardrail.json", esito(home, libero, tool=write(home / ".guardrail.json")), "ask")
+        failures += check("spento: redirect su ~/.guardrail.json", esito(home, libero, tool=bash("echo '{}' > ~/.guardrail.json")), "ask")
+        failures += check("spento: Write nel codice del plugin", esito(home, libero, tool=write(home / ".claude" / "plugins" / "x" / "guard.py")), "deny")
+        failures += check("spento: Write su ~/.claude/settings.json", esito(home, libero, tool=write(home / ".claude" / "settings.json")), "ask")
+        failures += check("spento: il resto passa", esito(home, libero, tool=write(libero / "note.txt")), "allow")
 
         (base / "mask.tsv").write_text("magazzino\tsede1\n", encoding="utf-8")
         od = {"tool_name": "Bash", "tool_input": {"command": "od -c nota.txt"}}

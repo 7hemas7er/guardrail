@@ -101,6 +101,11 @@ più niente. Una conferma in modalità auto la concede l'agente, e spegnere le
 regole che lo vincolano non può essere una sua decisione. Modificarlo resta una
 conferma: qualunque contenuto, anche `{}`, lo lascia acceso.
 
+Queste regole sulla configurazione e sul codice di guardrail valgono anche nelle
+cartelle dove guardrail è spento, le sole a farlo: da lì si raggiungono i
+`.guardrail.json` degli altri progetti, `~/.guardrail.json` (che si somma a ogni
+progetto acceso) e il codice del plugin.
+
 L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
 directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede
 una conferma. Lo scratchpad della sessione e la memoria di Claude Code
