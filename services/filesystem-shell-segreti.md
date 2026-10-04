@@ -79,10 +79,16 @@ non viene declassato a conferma, come invece accade per uno script invocato.
 Citare non è eseguire: in `grep "bash -c 'rm -rf'"` il comando è `grep`, e non
 succede niente.
 
-**Limite dichiarato**: un interprete che *non* è una shell resta fuori.
-`python3 -c "import os; os.system('rm -rf ~')"` e lo stesso codice dentro un
-heredoc Python non vengono analizzati — indovinare il senso di un linguaggio
-arbitrario sarebbe peggio che dichiarare il buco. Un progetto può stringere con
+**Limite dichiarato**: un interprete che *non* è una shell resta quasi del tutto
+fuori. Del codice passato come stringa (`python3 -c`, `node -e`) e degli heredoc
+diretti a Python o Node il hook guarda una cosa sola: se chiama API che scrivono
+o lanciano processi. Se no, le stringhe che contiene sono dati: un heredoc Python
+che corregge un README con dentro `find . -delete` non lo esegue, e un `node -e`
+che legge un file sotto `.claude/plugins` non lo modifica. Se sì, un
+`python3 -c` che nomina `.guardrail.json` o le settings chiede conferma, e il
+corpo dell'heredoc resta analizzato dalle regole della shell. Ma
+`os.system('rm -rf ~')` non viene riconosciuto come `rm -rf ~` — indovinare il
+senso di un linguaggio arbitrario sarebbe peggio che dichiarare il buco. Un progetto può stringere con
 una regola sua in `deny_commands` (es. `os\.system`), ma sappia che vale per
 `python3 -c "…"` e **non** dentro un heredoc: là il corpo è escluso dalle regex
 di progetto di proposito, perché un path citato in uno script non è un path
@@ -136,6 +142,9 @@ una conferma. Lo scratchpad della sessione e la memoria di Claude Code
 
 Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`) contiene dati, e
 il hook non lo legge come comandi — citare `rm -rf ~` in una guida non è
-eseguirlo. Uno che alimenta un interprete (`bash <<EOF`, `python - <<PY`) resta
-comandi a tutti gli effetti. Uno script scritto su file e poi lanciato viene
+eseguirlo. Uno che alimenta una shell (`bash <<EOF`) resta comandi a tutti gli
+effetti. Uno che alimenta Python o Node (`python - <<PY`, `node <<JS`) solo se il
+codice lancia processi, o se il tag non è fra virgolette e il corpo contiene `$(`
+o un backtick, che la shell esegue prima di passarlo all'interprete; Ruby, Perl e
+PHP restano sempre analizzati. Uno script scritto su file e poi lanciato viene
 scansionato al momento del lancio (vedi deploy-infrastruttura.md).
