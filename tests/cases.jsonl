@@ -260,6 +260,12 @@
 {"name": "timeout con opzioni davanti a rm -rf di un path letterale: ok", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 rm -rf build"}, "expect": "allow"}
 {"name": "timeout con opzioni davanti a psql verso prod", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 psql -h db-produzione.esempio.com -c \"DELETE FROM t WHERE id = 1\""}, "expect": "deny"}
 {"name": "timeout davanti a bash -c: la stringa resta analizzata", "tool_name": "Bash", "tool_input": {"command": "timeout 10 bash -c 'rm -rf \"$X\"'"}, "expect": "deny"}
+{"name": "falso positivo 2026-10-03: chiudere il browser di Playwright", "tool_name": "mcp__playwright__browser_close", "tool_input": {}, "expect": "allow"}
+{"name": "falso positivo 2026-10-04: chiudere una scheda di Playwright", "tool_name": "mcp__playwright__browser_tabs", "tool_input": {"action": "close", "index": 1}, "expect": "allow"}
+{"name": "chiudere una pagina di Chrome DevTools", "tool_name": "mcp__chrome-devtools__close_page", "tool_input": {"pageId": 1}, "expect": "allow"}
+{"name": "falso positivo 2026-10-04: context7 query-docs con 'with' nella domanda", "tool_name": "mcp__context7__query-docs", "tool_input": {"libraryId": "/keycloak/keycloak", "query": "end_session_endpoint logout with id_token_hint and post_logout_redirect_uri"}, "expect": "allow"}
+{"name": "context7 resolve-library-id: lettura", "tool_name": "mcp__context7__resolve-library-id", "tool_input": {"libraryName": "react", "query": "update state with hooks"}, "expect": "allow"}
+{"name": "tool di documentazione che modifica, su un server condiviso: conferma", "tool_name": "mcp__postgres-test__update-docs", "tool_input": {"query": "UPDATE pagina SET testo = 'x'"}, "expect": "ask"}
 # --- mascheramento dei termini riservati (hooks/mask.py) ---
 {"name": "senza mappa il comando non si tocca", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "expect": "allow", "rewritten": false}
 {"name": "con la mappa il comando passa dal runner", "tool_name": "Bash", "tool_input": {"command": "ping -c1 nas-sede1.rete.lan"}, "mask_map": "tests/fixtures/mask.tsv", "expect": "allow", "rewritten": true, "rewritten_excludes": ["magazzino"]}

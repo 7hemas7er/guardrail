@@ -102,7 +102,10 @@ locale non è un bersaglio di produzione, e non viene bloccato.
 Per i server MCP non SQL (Azure, GitHub, filesystem…) l'intenzione si legge dal
 nome del tool e dai campi che descrivono l'operazione (`command`, `action`,
 `method`, `state`); i tool di sola lettura (`get_*`, `list_*`, `search_*`) non
-vengono toccati.
+vengono toccati. Chiudere il browser di prova o una sua scheda (Playwright,
+Chrome DevTools) non è un'operazione distruttiva. Il campo `query` di un tool di
+documentazione (context7: `query-docs`, `resolve-library-id`) è una domanda, non
+SQL, e non viene classificato come tale.
 
 ### Come viene classificato un payload SQL via MCP
 
