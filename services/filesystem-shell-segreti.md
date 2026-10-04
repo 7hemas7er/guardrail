@@ -142,7 +142,10 @@ una conferma. Lo scratchpad della sessione e la memoria di Claude Code
 
 Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`) contiene dati, e
 il hook non lo legge come comandi — citare `rm -rf ~` in una guida non è
-eseguirlo. Uno che alimenta una shell (`bash <<EOF`) resta comandi a tutti gli
+eseguirlo; a meno che ciò che scrive finisca in una shell (`tee x <<EOF | bash`),
+o che il tag sia senza virgolette e il corpo contenga `$(`. Chi riceve l'heredoc
+si legge come lo legge la shell, virgolette comprese: se la riga non si capisce,
+il corpo resta analizzato. Uno che alimenta una shell (`bash <<EOF`) resta comandi a tutti gli
 effetti. Uno che alimenta Python o Node (`python - <<PY`, `node <<JS`) solo se il
 codice lancia processi, o se il tag non è fra virgolette e il corpo contiene `$(`
 o un backtick, che la shell esegue prima di passarlo all'interprete; Ruby, Perl e

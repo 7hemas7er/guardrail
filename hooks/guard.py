@@ -502,20 +502,57 @@ SPAWNS_PROCESS = re.compile(
     r"(?:subprocess|child_process|Open3|getattr|__import__|importlib|builtins|process\.binding)"
     r"|(?:system|popen|exec\w*|spawn\w*|shell_exec|passthru|proc_open|eval|Function|globals)\s*\("
 )
-# L'inizio di un comando: dopo un separatore, saltati i prefissi (`sudo`, `env`,
-# `FOO=1`, `timeout 60`) e il path del programma. Chi guarda *quale* comando
-# riceve un heredoc o una stringa di codice deve guardare qui, non in un punto
-# qualunque della riga: in `python=1 bash <<'EOF'` il comando è bash.
-CMD_START = (
-    r"(?:^|[;&|(\n]\s*)(?:(?:sudo|env|nohup|time|exec|command|timeout\s+[^\s;&|]+|\w+=[^\s;&|]*)\s+)*"
-    r"(?:[\w./~-]*/)?"
-)
-# `node -e '…'`, `python3 -c "…"`: il codice passato come stringa, intero.
+# `node -e '…'`, `python3 -c "…"`: il codice passato come stringa, intero. La
+# regex trova i candidati; che node o python siano davvero il comando lo decide
+# `comando_finale`, che legge la riga con le virgolette (vedi giudica_codice_inline).
 INLINE_CODE = re.compile(
-    CMD_START + r"(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
-    r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")""",
-    re.M,
+    r"\b(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
+    r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")"""
 )
+CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
+SHELL_PUNCTUATION = frozenset("();<>|&")
+
+
+def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
+    """Il comando in corso alla fine di `testo`, letto come lo legge la shell:
+    virgolette comprese, separatori (`;`, `&&`, `|`, `(`, a capo) e prefissi
+    (`sudo`, `env`, `FOO=1`, `timeout 60`) esclusi. Nome, argomenti, e se ha una
+    redirezione in uscita.
+
+    None se non si sa: virgolette spaiate (la fine di `testo` sta dentro una
+    stringa), backtick, o un segmento senza comando. Chi riceve None non deve
+    concludere niente di favorevole.
+    """
+    lexer = shlex.shlex(testo.replace("\n", " ; "), punctuation_chars=True, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segmento: list[str] = []
+    for token in tokens:
+        if "`" in token:
+            return None
+        if token and set(token) <= SHELL_PUNCTUATION and set(token) & set(";|&()"):
+            segmento = []
+        else:
+            segmento.append(token)
+    comando: list[str] = []
+    uscita = salta = False
+    for token in segmento:
+        if salta:
+            salta = False
+            continue
+        if token and set(token) <= {"<", ">"}:
+            uscita = uscita or ">" in token
+            salta = True
+            continue
+        comando.append(token)
+    comando = senza_prefissi(comando)
+    if not comando:
+        return None
+    return os.path.basename(comando[0]), comando[1:], uscita
 # Il bersaglio di una redirezione è il token che la segue, non il comando che la
 # contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
 REDIRECT = re.compile(r"(?:^|\s)\d*>>?\s*(?P<target>[^\s;&|<>()]+)")
@@ -770,12 +807,24 @@ def giudica_codice_inline(text: str) -> str:
     processi, i path protetti che nomina sono bersagli; se no, non ne ha.
 
     Resta nella riga solo fra virgolette doppie con dentro `$(` o un backtick: quelli
-    li esegue la shell, prima di passare il testo all'interprete.
+    li esegue la shell, prima di passare il testo all'interprete. E resta se node o
+    python non sono davvero il comando, letto con le virgolette: in
+    `tee "; python3 -c '" .guardrail.json "'"` il comando è tee, e scrive su
+    .guardrail.json.
     """
 
     def giudica(m: re.Match) -> str:
         codice = m.group("code")
         if codice.startswith('"') and ("$(" in codice or "`" in codice):
+            return m.group(0)
+        comando = comando_finale(m.string[: m.start("code")])
+        if (
+            comando is None
+            or not re.fullmatch(r"node|python[\d.]*", comando[0])
+            or not comando[1]
+            or not CODE_FLAG.fullmatch(comando[1][-1])
+            or m.string[m.end():m.end() + 1] not in ("", " ", "\t", "\n", ";", "&", "|", ")")
+        ):
             return m.group(0)
         if CODE_WRITES.search(codice) or SPAWNS_PROCESS.search(codice):
             for match in PROTECTED_PATH.finditer(codice):
@@ -850,21 +899,70 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
 # forma normale in cui questo repo documenta i propri blocchi. `bash <<EOF` resta
 # fuori, e il suo corpo continua a essere analizzato. La riga di testa e tutto ciò
 # che segue il tag di chiusura restano comunque analizzati, in ogni caso.
-# Il comando che riceve l'heredoc dev'essere `cat` con una redirezione, `tee`, o
-# git/gh, nello stesso segmento: in `echo x > /dev/null; bash <<'EOF'` la
-# redirezione è di echo, e il corpo lo esegue bash. Fra il comando e `<<` niente
-# `(` né backtick (qui e in HEREDOC_INTERPRETER): in `tee >(bash) <<EOF` e in
-# `python3 $(bash <<EOF …)` l'heredoc lo legge, o lo esegue, una shell.
-HEREDOC_DATA_HEAD = (
-    r"(?:cat\b[^\n;&|<(`]*>|tee\b"
-    r"|(?:git|gh)\b[^\n;&|]*?(?:--body-file|--notes-file|--file|-F)[=\s]+-(?=\s))"
-)
+#
+# *Chi* riceve l'heredoc si decide come lo decide la shell: la riga fino a `<<`
+# si legge con le virgolette (shlex), e conta il primo comando del segmento che
+# contiene `<<`, tolti i prefissi. Una regex sulla riga non basta: in
+# `bash -s "; python3 x" <<'EOF'` il `;` sta dentro una stringa, e il corpo lo
+# esegue bash. Se la riga non si legge (virgolette spaiate, `<<` dentro una
+# stringa, `<<<`), il corpo resta analizzato. Un `(` o un backtick prima di `<<`
+# apre un altro comando (`tee >(bash) <<EOF`, `python3 $(bash <<EOF …)`): lì chi
+# riceve non si sa, e il corpo resta analizzato.
+#
+# Un heredoc di dati è tale solo se nessuno riesegue ciò che scrive: `cat > x <<EOF
+# | bash` e `tee x <<EOF | bash` passano il corpo a una shell. E con il tag senza
+# virgolette `$(…)` e i backtick nel corpo li esegue la shell, prima di tutto.
 HEREDOC = re.compile(
-    r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?" + HEREDOC_DATA_HEAD
-    + r"[^\n;&|(`]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
+    r"(?P<head>^(?P<prima>[^\n]*?)(?<!<)<<(?!<)-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)(?P<dopo>[^\n]*)\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
+GIT_STDIN_FLAGS = ("-F", "--file", "--body-file", "--notes-file")
+
+
+def riscrivi_heredoc(text: str, da_tagliare) -> str:
+    """Toglie il corpo degli heredoc per cui `da_tagliare(m, ricevente)` è vero.
+
+    Il ricevente si legge dal comando *intero* fino a `<<`, non dalla sola riga:
+    una riga che sembra `python3 - <<EOF` può stare dentro una stringa aperta più
+    su (`X='` a capo), e allora non è un heredoc e il testo che segue lo esegue la
+    shell. I corpi degli heredoc già incontrati non contano per le virgolette: la
+    shell non li interpreta, e un apostrofo dentro un testo non apre niente.
+    Se il ricevente non si sa, il corpo resta.
+    """
+    pezzi: list[str] = []
+    struttura: list[str] = []
+    pos = 0
+    for m in HEREDOC.finditer(text):
+        fuori = text[pos:m.start()]
+        pezzi.append(fuori)
+        struttura.append(fuori)
+        ricevente = comando_finale("".join(struttura) + m.group("prima"))
+        taglia = ricevente is not None and da_tagliare(m, ricevente)
+        pezzi.append(m.group("head") + m.group("end") if taglia else m.group(0))
+        struttura.append(m.group("head") + m.group("end") if ricevente is not None else m.group(0))
+        pos = m.end()
+    pezzi.append(text[pos:])
+    return "".join(pezzi)
+
+
+def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
+    """`cat > x <<EOF`, `tee x <<EOF`, `git commit -F - <<EOF`: il corpo si archivia."""
+    if "|" in m.group("dopo"):
+        return False
+    if not m.group("q") and ("$(" in m.group("body") or "`" in m.group("body")):
+        return False
+    nome, args, uscita = ricevente
+    if nome == "cat":
+        return uscita
+    if nome == "tee":
+        return True
+    if nome in ("git", "gh"):
+        return any(
+            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
+            for i, a in enumerate(args)
+        )
+    return False
 
 # Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
 # Il corpo sono comandi — per quell'interprete, non per la shell.
@@ -889,13 +987,9 @@ HEREDOC = re.compile(
 #
 # `bash`/`sh`/`zsh` restano fuori: lì il corpo è shell per davvero, e le regex di
 # progetto devono vederlo.
-HEREDOC_INTERPRETER = re.compile(
-    r"(?P<head>^(?:[^\n]*?" + CMD_START + r")?(?:[\w./~-]*/)?(?P<interp>python[\d.]*|node|ruby|perl|php|Rscript)(?=[\s<])"
-    r"[^\n;&|(`]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
-    r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
-    re.M | re.S,
-)
+INTERPRETERS = re.compile(r"python[\d.]*|node|ruby|perl|php|Rscript")
 INTERPRETERS_WITHOUT_SHELL = re.compile(r"python[\d.]*|node|Rscript")
+
 
 SCRIPT_BY_INTERPRETER = re.compile(
     r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<interp>(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+"
@@ -906,7 +1000,7 @@ SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(?P<path>[^\s;&|(
 
 
 def strip_data_heredocs(text: str) -> str:
-    return HEREDOC.sub(lambda m: m.group("head") + m.group("end"), text)
+    return riscrivi_heredoc(text, heredoc_di_dati)
 
 
 def strip_interpreter_heredocs(text: str) -> str:
@@ -918,24 +1012,22 @@ def strip_interpreter_heredocs(text: str) -> str:
 
     Per le regole built-in c'è `strip_inert_heredocs`, che taglia di meno.
     """
-    return HEREDOC_INTERPRETER.sub(lambda m: m.group("head") + m.group("end"), text)
+    return riscrivi_heredoc(text, lambda m, ricevente: INTERPRETERS.fullmatch(ricevente[0]) is not None)
 
 
 def strip_inert_heredocs(text: str) -> str:
     """Il testo per le regole BUILT-IN: senza i corpi degli heredoc che non possono
-    arrivare alla shell (vedi il commento su HEREDOC_INTERPRETER)."""
+    arrivare alla shell (vedi il commento su HEREDOC)."""
 
-    def taglia(m: re.Match) -> str:
+    def inerte(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
         corpo = m.group("body")
-        if (
-            not INTERPRETERS_WITHOUT_SHELL.fullmatch(m.group("interp"))
-            or SPAWNS_PROCESS.search(corpo)
-            or (not m.group("q") and ("$(" in corpo or "`" in corpo))
-        ):
-            return m.group(0)
-        return m.group("head") + m.group("end")
+        return (
+            INTERPRETERS_WITHOUT_SHELL.fullmatch(ricevente[0]) is not None
+            and not SPAWNS_PROCESS.search(corpo)
+            and (bool(m.group("q")) or ("$(" not in corpo and "`" not in corpo))
+        )
 
-    return HEREDOC_INTERPRETER.sub(taglia, text)
+    return riscrivi_heredoc(text, inerte)
 
 
 def solo_sintassi(match: re.Match) -> bool:
