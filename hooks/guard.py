@@ -844,12 +844,18 @@ HEREDOC = re.compile(
 )
 
 # Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
-# Il corpo sono comandi — per quell'interprete, non per la shell — e resta
-# analizzato da tutte le regole built-in: un `os.system("rm -rf ...")` dentro un
-# heredoc Python va visto, ed è la ragione per cui la riga 395 dice che questi
-# heredoc non si toccano.
+# Il corpo sono comandi — per quell'interprete, non per la shell.
 #
-# Le regex di PROGETTO sono un caso diverso, e solo loro usano questo taglio.
+# Le regole built-in lo vedono solo se quel codice può arrivare alla shell: se
+# lancia processi (`os.system("rm -rf ...")`, `subprocess`, `child_process`), se
+# l'interprete è Ruby, Perl o PHP (lì `system "…"` e i backtick eseguono senza
+# parentesi), o se il tag non è fra virgolette e il corpo contiene `$(` o un
+# backtick, che la shell esegue *prima* di passare il testo all'interprete.
+# Altrimenti un testo citato in un letterale Python non è un comando: uno script
+# che corregge un README con dentro `find . -delete` o `base64 -d x | sh` veniva
+# fermato come se li eseguisse. Falso positivo del 2026-10-03/04.
+#
+# Le regex di PROGETTO tagliano invece sempre il corpo.
 # Sono stringhe arbitrarie (un path, un flag) scritte per intercettare un comando
 # della shell: incontrate dentro un letterale Python descrivono, non eseguono.
 # Il 2026-09-18 `ask_commands: ["scripts/clone-prod-to-dev\\.sh"]` ha fatto
@@ -861,11 +867,12 @@ HEREDOC = re.compile(
 # `bash`/`sh`/`zsh` restano fuori: lì il corpo è shell per davvero, e le regex di
 # progetto devono vederlo.
 HEREDOC_INTERPRETER = re.compile(
-    r"(?P<head>^[^\n]*?\b(?:python[\d.]*|node|ruby|perl|php|Rscript)\b"
+    r"(?P<head>^[^\n]*?\b(?P<interp>python[\d.]*|node|ruby|perl|php|Rscript)\b"
     r"[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
+INTERPRETERS_WITHOUT_SHELL = re.compile(r"python[\d.]*|node|Rscript")
 
 SCRIPT_BY_INTERPRETER = re.compile(
     r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<interp>(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+"
@@ -886,9 +893,26 @@ def strip_interpreter_heredocs(text: str) -> str:
     testa resta: `python3 - <<PY` continua a essere un comando, e se la testa
     contiene il pattern cercato la regola scatta come prima.
 
-    Non usarlo per le regole built-in: quelle devono continuare a vedere tutto.
+    Per le regole built-in c'è `strip_inert_heredocs`, che taglia di meno.
     """
     return HEREDOC_INTERPRETER.sub(lambda m: m.group("head") + m.group("end"), text)
+
+
+def strip_inert_heredocs(text: str) -> str:
+    """Il testo per le regole BUILT-IN: senza i corpi degli heredoc che non possono
+    arrivare alla shell (vedi il commento su HEREDOC_INTERPRETER)."""
+
+    def taglia(m: re.Match) -> str:
+        corpo = m.group("body")
+        if (
+            not INTERPRETERS_WITHOUT_SHELL.fullmatch(m.group("interp"))
+            or SPAWNS_PROCESS.search(corpo)
+            or (not m.group("q") and ("$(" in corpo or "`" in corpo))
+        ):
+            return m.group(0)
+        return m.group("head") + m.group("end")
+
+    return HEREDOC_INTERPRETER.sub(taglia, text)
 
 
 def solo_sintassi(match: re.Match) -> bool:
@@ -1105,8 +1129,9 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
     # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
     # un interprete: là dentro un path è citato, non eseguito. Le regole built-in
-    # continuano a usare `text`, che quei corpi li contiene ancora.
+    # li perdono solo se quel codice non può arrivare alla shell.
     testo_progetto = strip_interpreter_heredocs(text)
+    text = strip_inert_heredocs(text)
 
     if depth == 0 and matches_any(config["allow_commands"], testo_progetto):
         return
@@ -1704,7 +1729,7 @@ def _check_write_guardrail(path: Path) -> None:
 def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
     """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
     .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
-    text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+    text = strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd)))
     check_protected_writes(text, cwd)
     if depth >= MAX_DEPTH:
         return
