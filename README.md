@@ -106,11 +106,12 @@ non accende niente, altrimenti varrebbe per ogni cartella della home.
 | accenderlo solo per te, non per i colleghi | come sopra, e il file in `.git/info/exclude` invece che nel commit |
 | spegnerlo | togli tu il `.guardrail.json`: l'agente non può |
 
-Quando Claude parte in una cartella senza `.guardrail.json`, alla prima sessione
-l'agente ti dice che guardrail lì è spento e come accenderlo, citando
-`.mcp.json`, `docker-compose` o `scripts/deploy` se ci sono. Se lo lasci spento,
-l'avviso non si ripete per quella cartella: è una scelta, non una dimenticanza da
-ricordarti ogni volta. Lo stato degli avvisi sta in `~/.claude/guardrail.state.json`;
+Quando Claude parte in una cartella senza `.guardrail.json`, alla prima richiesta
+l'agente ti chiede se attivarlo, prima di fare altro, citando `.mcp.json`,
+`docker-compose` o `scripts/deploy` se ci sono: **sì, configuralo**
+(`/guardrail:setup`), **sì, regole di base** (un `.guardrail.json` con `{}`) o
+**no**. La domanda non si ripete per quella cartella: è una scelta, non una
+dimenticanza da ricordarti ogni volta. Lo stato degli avvisi sta in `~/.claude/guardrail.state.json`;
 togliere la voce `inattivo:<cartella>` lo fa ricomparire.
 
 Vale il progetto da cui è partita la sessione e la directory di lavoro del

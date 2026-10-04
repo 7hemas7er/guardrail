@@ -54,6 +54,7 @@ def main() -> int:
         failures += check("cartella non configurata: niente regole", "Produzione si legge" not in out)
         failures += check("cartella non configurata: avviso che guardrail è spento", "non è attivo" in out and "/guardrail:setup" in out)
         failures += check("l'avviso cita la superficie di produzione", ".mcp.json" in out)
+        failures += check("l'agente deve chiedere sì/no all'utente", "AskUserQuestion" in out and "«No»" in out)
         failures += check("cartella non configurata: niente avviso sul sandbox", "sandbox" not in out)
         failures += check("stato salvato", (home / ".claude" / "guardrail.state.json").is_file())
 

@@ -7,8 +7,9 @@ aggiunge lo stdout dei hook SessionStart al contesto della sessione. Le regole
 complete per servizio stanno in services/ e si caricano con la skill `guardrail`.
 
 Altrove non inietta niente, e la prima volta che una sessione parte in quella
-cartella lo dice: guardrail non è attivo, e come si accende. La scelta è
-dell'utente; l'avviso non si ripete, così una cartella lasciata spenta di
+cartella chiede all'agente di domandare all'utente se attivarlo: sì con
+/guardrail:setup, sì con le regole di base, o no. La scelta è dell'utente; la
+domanda non si ripete, così una cartella lasciata spenta di
 proposito non diventa rumore.
 
 In coda, una sola volta per tipo, segnala anche quello che il hook non può fare da
@@ -120,9 +121,12 @@ def avvisi(cwd: Path) -> list[tuple[str, str]]:
             f"inattivo:{progetto}",
             f"guardrail non è attivo in questa cartella ({progetto}): manca un .guardrail.json, quindi "
             "comandi distruttivi, scritture in produzione e letture di segreti non vengono controllati."
-            f"{superficie} Per attivarlo: /guardrail:setup, che propone la configurazione, oppure un "
-            ".guardrail.json con `{}` nella root del progetto. Se lo lasci spento, l'avviso non si "
-            "ripete per questa cartella.",
+            f"{superficie}\n"
+            "  PRIMA di occuparti della richiesta dell'utente, chiedigli se vuole attivarlo qui (con "
+            "AskUserQuestion, se c'è), con tre risposte: «Sì, configuralo» → esegui /guardrail:setup; "
+            "«Sì, regole di base» → crea nella root del progetto un .guardrail.json con `{}`; «No» → "
+            "non fare niente. La domanda non si ripete per questa cartella: se l'utente cambia idea, "
+            "/guardrail:setup. Decide l'utente: non rispondere al posto suo. Poi passa alla sua richiesta.",
         )]
 
     settings = read_json(Path.home() / ".claude" / "settings.json")
