@@ -69,9 +69,16 @@ come before `allow_commands`, which doesn't exempt them.
 
 **Stated limit**: these are regular expressions over a shell command, and a
 variant they don't anticipate can always be found. An interpreter that is not a
-shell (`python3 -c "os.remove(…)"`) is out of scope, as for every other rule; a
+shell is out of scope, as for every other rule, except that a `python3 -c` or
+`node -e` whose code writes files and names `.guardrail.json` or the settings
+asks for confirmation; a
 `.guardrail.json` more than two levels below a deleted folder is not searched
 for; the hook checks a script before the command runs, so a script written and
 launched in the same command is not seen in its final form. These rules protect
 against an agent that makes a mistake, not one looking for the gap. The details
 per rule are in [services/filesystem-shell-segreti.md](../services/filesystem-shell-segreti.md).
+
+A copy of a project in a temporary folder (`/tmp`, `$TMPDIR`) outside the home —
+a `git checkout-index` or `cp -r` into the scratchpad — carries its own
+`.guardrail.json`, which switches nothing on: removing the copy is allowed, unless
+the session works inside it. The path must be literal: `rm -rf "$T"` stays blocked.

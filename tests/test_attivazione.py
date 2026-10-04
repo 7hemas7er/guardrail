@@ -137,6 +137,26 @@ def main() -> int:
                           esito(home, scelto, tool=bash('echo x >> .guardrail.json; cat nota | rm -rf "$X"')), "deny")
         (scelto / ".guardrail.json").write_text("{}", encoding="utf-8")
 
+        # Una copia del progetto in una cartella temporanea (fuori dalla home) non
+        # accende niente: toglierla non spegne guardrail. Finché la sessione non ci lavora.
+        copia = base / "copia-progetto"
+        (copia / ".git").mkdir(parents=True)
+        (copia / ".claude").mkdir()
+        (copia / ".guardrail.json").write_text("{}", encoding="utf-8")
+        failures += check("copia in /tmp: rm -rf passa", esito(home, scelto, tool=bash(f"rm -rf {copia}")), "allow")
+        failures += check("copia in /tmp: rm del suo .guardrail.json passa", esito(home, scelto, tool=bash(f"rm {copia}/.guardrail.json")), "allow")
+        failures += check("copia in /tmp: anche da una cartella spenta", esito(home, libero, tool=bash(f"rm -rf {copia}")), "allow")
+        failures += check("copia in /tmp: le sue settings si scrivono", esito(home, scelto, tool=bash(f"echo '{{}}' > {copia}/.claude/settings.json")), "allow")
+        failures += check("copia in /tmp in cui si lavora: rm -rf negato", esito(home, copia, tool=bash(f"rm -rf {copia}")), "deny")
+        failures += check("copia in /tmp che è il progetto della sessione: negato", esito(home, scelto, progetto=copia, tool=bash(f"rm -rf {copia}")), "deny")
+        failures += check("copia in /tmp tolta per variabile: negato", esito(home, scelto, tool=bash('C=x; rm "$C/.guardrail.json"')), "deny")
+        # Un .guardrail.json che è un link verso /tmp resta la configurazione del progetto.
+        legato = home / "legato"
+        (legato / ".git").mkdir(parents=True)
+        (base / "conf-legata.json").write_text("{}", encoding="utf-8")
+        (legato / ".guardrail.json").symlink_to(base / "conf-legata.json")
+        failures += check("link verso /tmp al posto del .guardrail.json: la scrittura chiede", esito(home, legato, tool=bash("echo '{}' > .guardrail.json")), "ask")
+
         # Un link a /dev/null al posto del file non spegne guardrail.
         linkato = home / "linkato"
         (linkato / ".git").mkdir(parents=True)

@@ -42,6 +42,7 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -478,6 +479,26 @@ def senza_prefissi(tokens: list[str]) -> list[str]:
         break
     return tokens
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
+# Codice (Python, JavaScript) che scrive, cancella o sposta file. Largo di
+# proposito: un falso allarme qui riporta solo al comportamento prudente di prima.
+CODE_WRITES = re.compile(
+    r"\b(?:write\w*|append\w*|dump\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
+    r"|symlink\w*|link\w*|mkdir\w*|makedirs|truncate\w*|chmod\w*|chown\w*|utime\w*|touch|replace|extract\w*"
+    r"|urlretrieve|createWriteStream)\s*\("
+    r"|\bopen\w*\s*\([^\n]*?['\"][rbt]*[wax+][rwabxt+]*['\"]"
+    r"|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|\bshutil\b|\bfs\.promises\b"
+)
+# Codice che lancia processi: lì una stringa può diventare un comando di shell
+# (`os.system("rm -rf …")`, `execSync(…)`), e le regole della shell devono vederla.
+SPAWNS_PROCESS = re.compile(
+    r"\b(?:subprocess|child_process|Open3|pty)\b"
+    r"|\b(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|shell_exec|passthru|proc_open|pcntl_exec)\s*\("
+)
+# `node -e '…'`, `python3 -c "…"`: il codice passato come stringa, intero.
+INLINE_CODE = re.compile(
+    r"\b(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
+    r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")"""
+)
 # Il bersaglio di una redirezione è il token che la segue, non il comando che la
 # contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
 REDIRECT = re.compile(r"(?:^|\s)\d*>>?\s*(?P<target>[^\s;&|<>()]+)")
@@ -638,6 +659,65 @@ def contiene_guardrail(base: Path, profondita: int = 2) -> bool:
     return False
 
 
+def operando_vuoto(raw: str) -> bool:
+    """Un operando che, tolte virgolette e backslash, non nomina niente.
+
+    È il resto di una riga spezzata male: in `rm -f "${D}/v*" "$(f)/x"` (nvm.sh)
+    dividere su `$(` lascia un `"` orfano, che come path è la directory di lavoro.
+    Così `source ~/.nvm/nvm.sh` era negato come se cancellasse il progetto.
+    """
+    return not raw.strip("\"'\\ \t")
+
+
+def radici_temporanee() -> list[Path]:
+    """Le cartelle temporanee di sistema e della sessione. Mai `/`: con TMPDIR=/
+    tutto sarebbe una copia. La home la esclude `copia_temporanea`."""
+    candidati = [Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())]
+    candidati += [Path(os.environ[k]) for k in ("TMPDIR", "TMP", "TEMP") if os.environ.get(k)]
+    radici: list[Path] = []
+    for candidato in candidati:
+        try:
+            reale = candidato.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if reale != Path(reale.anchor) and reale not in radici:
+            radici.append(reale)
+    return radici
+
+
+def copia_temporanea(cartella: Path, cwd: str) -> bool:
+    """`cartella` è una copia in una cartella temporanea che questa sessione non usa?
+
+    Una copia del progetto in /tmp (`git checkout-index`, `git archive`, `cp -r`)
+    si porta dietro il suo .guardrail.json e il suo .claude/, che però non accendono
+    né configurano niente: toglierli o riscriverli non spegne guardrail. Lo
+    spegnerebbe solo se la directory di lavoro o il progetto della sessione ci
+    stessero dentro, e lì il controllo resta. La home non è mai una copia, anche se
+    sta sotto /tmp (i test ne creano una finta). Falso positivo del 2026-10-04:
+    `rm -rf /tmp/claude-1000/tmp.X` negato per la copia che conteneva.
+    """
+    try:
+        reale = cartella.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+    if is_inside(reale, home):
+        return False
+    if not any(reale != radice and is_inside(reale, radice) for radice in radici_temporanee()):
+        return False
+    sessione = [cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")]
+    return not any(dove and is_inside(Path(dove), reale) for dove in sessione)
+
+
+def cartella_governata(path: Path) -> Path:
+    """La cartella su cui agisce un file di configurazione: quella che contiene il
+    .guardrail.json, o il progetto che contiene il .claude/ (vale il più interno)."""
+    parti = path.parts
+    if ".claude" in parti[:-1]:
+        return Path(*parti[: len(parti) - 1 - parti[::-1].index(".claude")])
+    return path.parent
+
+
 def link_al_guardrail(segment: str) -> bool:
     """`ln` o `cp -l/-s` con .guardrail.json fra gli operandi: un secondo nome per il file."""
     tokens = senza_prefissi(shell_tokens(segment))
@@ -650,14 +730,57 @@ def link_al_guardrail(segment: str) -> bool:
     return collega and any(nome_guardrail(Path(a).name) for a in args if not a.startswith("-"))
 
 
+def modifica_protetta(match: re.Match) -> None:
+    path = match.group("path")
+    if match.group("plugin"):
+        deny(
+            f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
+            "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+        )
+    ask(
+        f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
+        "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
+    )
+
+
+def giudica_codice_inline(text: str) -> str:
+    """Il codice di `node -e` e `python3 -c` si giudica intero, e poi si toglie.
+
+    shell_segments non guarda le virgolette: le parentesi e i `;` del codice
+    spezzerebbero la riga a metà, e un path letto dentro `require(…)` sembrerebbe
+    un operando di node, cioè un bersaglio. È il falso positivo del 2026-10-04 su
+    `.claude/plugins/known_marketplaces.json`. Se il codice scrive o lancia
+    processi, i path protetti che nomina sono bersagli; se no, non ne ha.
+
+    Resta nella riga solo fra virgolette doppie con dentro `$(` o un backtick: quelli
+    li esegue la shell, prima di passare il testo all'interprete.
+    """
+
+    def giudica(m: re.Match) -> str:
+        codice = m.group("code")
+        if codice.startswith('"') and ("$(" in codice or "`" in codice):
+            return m.group(0)
+        if CODE_WRITES.search(codice) or SPAWNS_PROCESS.search(codice):
+            for match in PROTECTED_PATH.finditer(codice):
+                modifica_protetta(match)
+        return m.group(0)[: m.start("code") - m.start()] + "''"
+
+    return INLINE_CODE.sub(giudica, text)
+
+
 def check_protected_writes(text: str, cwd: str = "") -> None:
+    text = giudica_codice_inline(text)
     for segment in shell_segments(text):
         tolto = None
         for raw in removed_paths(segment):
+            if operando_vuoto(raw):
+                continue
             if nome_guardrail(Path(raw).name):
-                tolto = raw
+                if not copia_temporanea(percorso(raw, cwd).parent, cwd):
+                    tolto = raw
             elif not any(c in raw for c in "*?[") and contiene_guardrail(percorso(raw, cwd)):
-                tolto = f"{raw}, che contiene un .guardrail.json"
+                if not copia_temporanea(percorso(raw, cwd), cwd):
+                    tolto = f"{raw}, che contiene un .guardrail.json"
             if tolto:
                 break
         if tolto is None and "guardrail" in segment.lower() and FIND_DELETE.search(segment):
@@ -674,27 +797,25 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
                 "dalla conferma. Se serve una copia, usa cp senza -l/-s. (guardrail: RULES-CORE.md 8)"
             )
         for target in write_targets(segment):
+            if operando_vuoto(target):
+                continue
             # Anche dove porta: `note.json` può essere un link a .guardrail.json.
+            try:
+                reale = percorso(target, cwd).resolve()
+            except (OSError, RuntimeError):
+                reale = None
             match = PROTECTED_PATH.search(target)
-            if not match and cwd:
-                try:
-                    reale = percorso(target, cwd).resolve()
-                except (OSError, RuntimeError):
-                    reale = None
-                if reale is not None:
-                    match = PROTECTED_PATH.search(str(reale))
+            if not match and cwd and reale is not None:
+                match = PROTECTED_PATH.search(str(reale))
             if not match:
                 continue
-            path = match.group("path")
-            if match.group("plugin"):
-                deny(
-                    f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
-                    "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
-                )
-            ask(
-                f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
-                "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
-            )
+            # Il nome e dove porta, tutti e due: un link in /tmp può portare al progetto,
+            # e il .guardrail.json di un progetto può essere un link verso /tmp.
+            if reale is not None and all(
+                copia_temporanea(cartella_governata(p), cwd) for p in (percorso(target, cwd), reale)
+            ):
+                continue
+            modifica_protetta(match)
 
 
 # ---------------------------------------------------------------------------
