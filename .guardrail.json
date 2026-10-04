@@ -9,9 +9,9 @@
   "_prod_patterns": "Vuoto di proposito: questo repo non ha ambienti. I default del hook bastano, e aggiungere qui gli host d'esempio della documentazione (db-produzione.esempio.com, appdb) renderebbe sospetto ogni comando che tocca services/ o tests/.",
   "prod_patterns": [],
 
-  "_deny_commands": "1) pericoloso.sh e una fixture: esiste per essere LETTA dal hook quando qualcuno la invoca, e contiene un rsync --delete verso un host remoto. Invocarla oggi e solo una conferma, e in modalita auto la conferma la da l'agente. 2) GUARDRAIL_DISABLE= spegne il hook: e una decisione umana, presa fuori dalla sessione. Leggerla (printenv GUARDRAIL_DISABLE) resta permesso, serve a /guardrail:check.",
+  "_deny_commands": "1) pericoloso.sh e una fixture: esiste per essere LETTA dal hook quando qualcuno la invoca, e contiene un rsync --delete verso un host remoto. Invocarla oggi e solo una conferma, e in modalita auto la conferma la da l'agente. La regola scatta solo quando la fixture viene eseguita (anche con bash/sh, sudo, timeout, source, path assoluto), non quando il path compare come testo: il 2026-10-04 aveva bloccato un printf che lo citava dentro un JSON di prova. 2) GUARDRAIL_DISABLE= spegne il hook: e una decisione umana, presa fuori dalla sessione. Leggerla (printenv GUARDRAIL_DISABLE) resta permesso, serve a /guardrail:check.",
   "deny_commands": [
-    "tests/fixtures/pericoloso\\.sh",
+    "(?:^|[;&|(\\n]\\s*)(?:(?:sudo|nohup|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(?:(?:ba|z|da)?sh\\s+(?:-\\S+\\s+)*|(?:source|\\.)\\s+)?(?:\\S*/)?tests/fixtures/pericoloso\\.sh\\b",
     "GUARDRAIL_DISABLE\\s*="
   ],
 

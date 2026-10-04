@@ -195,6 +195,8 @@
 {"name": "config del repo: git status resta libero", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "git status --short"}, "expect": "allow"}
 {"name": "config del repo: scrittura MCP su Azure bloccata", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__containerapps", "tool_input": {"command": "update", "name": "app-qualsiasi"}, "expect": "deny"}
 {"name": "config del repo: lettura MCP su Azure permessa", "config": ".guardrail.json", "tool_name": "mcp__Azure-MCP-Server__group_list", "tool_input": {"subscription": "abc"}, "expect": "allow"}
+{"name": "config del repo: la fixture pericolosa lanciata e' negata", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "timeout 30 bash tests/fixtures/pericoloso.sh"}, "expect": "deny"}
+{"name": "falso positivo 2026-10-04: config del repo, il path della fixture citato in un JSON di prova", "config": ".guardrail.json", "tool_name": "Bash", "tool_input": {"command": "printf '%s' '{\"command\":\"bash tests/fixtures/pericoloso.sh\"}' > /dev/null"}, "expect": "allow"}
 {"name": "allow_scripts: script approvato con impronta giusta", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/approvato.sh"}, "expect": "allow"}
 {"name": "allow_scripts: approvato ma modificato, torna la conferma", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask", "reason_contains": "allow_scripts, ma il suo contenuto"}
 {"name": "allow_scripts: una voce senza impronta non esenta", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/senza_impronta.sh"}, "expect": "ask", "reason_contains": "non dichiara sha256"}
