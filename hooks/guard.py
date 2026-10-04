@@ -35,6 +35,7 @@ Solo libreria standard. Nessuna dipendenza, nessuna rete.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -407,7 +408,8 @@ PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file", "--expression"}
 # aggirare un blocco senza passare da Write/Edit.
 PROTECTED_PATH = re.compile(
     r"(?:^|[\s/\"'=])(?P<path>\.guardrail\.json|\.claude/settings(?:\.local)?\.json|\.claude/CLAUDE\.md"
-    r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)"
+    r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)",
+    re.I,  # su NTFS (WSL, /mnt/c) .GUARDRAIL.JSON è lo stesso file
 )
 SHELL_WRITER_CMDS = re.compile(
     r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b"
@@ -565,10 +567,66 @@ def removed_paths(segment: str) -> list[str]:
 SPEGNE_GUARDRAIL = "è il file che accende guardrail nel suo progetto"
 
 
-def check_protected_writes(text: str) -> None:
+def nome_guardrail(nome: str) -> bool:
+    """`nome` indica .guardrail.json, anche come glob (`.guardrail*`, `.[!.]*`) o con
+    maiuscole diverse. Come in bash, un glob che non comincia con il punto non
+    prende i file nascosti: `rm *.json` non lo tocca."""
+    nome = nome.lower()
+    return nome.startswith(".") and fnmatch.fnmatchcase(".guardrail.json", nome)
+
+
+def percorso(raw: str, cwd: str) -> Path:
+    path = Path(os.path.expanduser(raw.strip("\"'")))
+    return path if path.is_absolute() else Path(cwd or os.getcwd()) / path
+
+
+def contiene_guardrail(base: Path, profondita: int = 2) -> bool:
+    """`base` è una directory con un .guardrail.json, fino a `profondita` livelli sotto?"""
+    try:
+        if base.is_symlink() or not base.is_dir():
+            return False
+        if os.path.lexists(base / ".guardrail.json"):
+            return True
+        if profondita == 0:
+            return False
+        with os.scandir(base) as voci:
+            for indice, voce in enumerate(voci):
+                if indice > 500:
+                    break
+                if voce.name in ("node_modules", "vendor", ".git", ".venv", "venv"):
+                    continue
+                if voce.is_dir(follow_symlinks=False) and contiene_guardrail(Path(voce.path), profondita - 1):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def link_al_guardrail(segment: str) -> bool:
+    """`ln` o `cp -l/-s` con .guardrail.json fra gli operandi: un secondo nome per il file."""
+    tokens = shell_tokens(segment)
+    while tokens and COMMAND_PREFIX.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return False
+    command, args = os.path.basename(tokens[0]), tokens[1:]
+    collega = command == "ln" or (
+        command == "cp" and any(a in ("-l", "-s", "--link", "--symbolic-link") or re.match(r"^-[a-zA-Z]*[ls]", a) for a in args)
+    )
+    return collega and any(nome_guardrail(Path(a).name) for a in args if not a.startswith("-"))
+
+
+def check_protected_writes(text: str, cwd: str = "") -> None:
     for segment in shell_segments(text):
-        tolto = next((p for p in removed_paths(segment) if Path(p).name == ".guardrail.json"), None)
-        if tolto is None and "guardrail" in segment and FIND_DELETE.search(segment):
+        tolto = None
+        for raw in removed_paths(segment):
+            if nome_guardrail(Path(raw).name):
+                tolto = raw
+            elif not any(c in raw for c in "*?[") and contiene_guardrail(percorso(raw, cwd)):
+                tolto = f"{raw}, che contiene un .guardrail.json"
+            if tolto:
+                break
+        if tolto is None and "guardrail" in segment.lower() and FIND_DELETE.search(segment):
             tolto = "un .guardrail.json (find … -delete)"
         if tolto:
             deny(
@@ -576,8 +634,21 @@ def check_protected_writes(text: str) -> None:
                 "decisione dell'utente, che lo fa da sé. Se una regola ti blocca a torto, spiegalo "
                 "all'utente. (guardrail: RULES-CORE.md 8)"
             )
+        if link_al_guardrail(segment):
+            deny(
+                "un link a .guardrail.json gli darebbe un secondo nome, da cui riscriverlo senza passare "
+                "dalla conferma. Se serve una copia, usa cp senza -l/-s. (guardrail: RULES-CORE.md 8)"
+            )
         for target in write_targets(segment):
+            # Anche dove porta: `note.json` può essere un link a .guardrail.json.
             match = PROTECTED_PATH.search(target)
+            if not match and cwd:
+                try:
+                    reale = percorso(target, cwd).resolve()
+                except (OSError, RuntimeError):
+                    reale = None
+                if reale is not None:
+                    match = PROTECTED_PATH.search(str(reale))
             if not match:
                 continue
             path = match.group("path")
@@ -642,10 +713,10 @@ HEREDOC_INTERPRETER = re.compile(
 )
 
 SCRIPT_BY_INTERPRETER = re.compile(
-    r"(?:^|[;&|(]\s*)(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+(?:-[\w=-]+\s+)*(?P<path>[^\s;&|()-][^\s;&|()]*)"
+    r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+(?:-[\w=-]+\s+)*(?P<path>[^\s;&|()-][^\s;&|()]*)"
 )
-SCRIPT_DIRECT = re.compile(r"(?:^|[;&|(]\s*)(?:sudo\s+)?(?P<path>(?:\./|\.\./|~/)[^\s;&|()]+)")
-SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]+)")
+SCRIPT_DIRECT = re.compile(r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<path>(?:\./|\.\./|~/)[^\s;&|()]+)")
+SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]+)")
 
 
 def strip_data_heredocs(text: str) -> str:
@@ -874,7 +945,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     check_inline_shell(text, config, cwd, depth)
     check_rm(text)
     check_secret_reads(text)
-    check_protected_writes(text)
+    check_protected_writes(text, cwd)
 
     # Distruzione di sistema o supply chain
     if re.search(r"\bsudo\s+rm\b", text):
@@ -1351,7 +1422,17 @@ def is_inside(path: Path, root: Path | None) -> bool:
 
 def check_write_guardrail(path: Path) -> None:
     """Scritture su guardrail stesso: il suo codice, la sua configurazione, le
-    impostazioni di Claude Code. Valgono anche dove guardrail è spento (vedi `decide`)."""
+    impostazioni di Claude Code. Valgono anche dove guardrail è spento (vedi `decide`).
+    Si guarda anche dove porta il percorso: `note.json` può essere un link."""
+    try:
+        reale = path.resolve()
+    except (OSError, RuntimeError):
+        reale = path
+    for candidato in dict.fromkeys([path, reale]):
+        _check_write_guardrail(candidato)
+
+
+def _check_write_guardrail(path: Path) -> None:
     raw = str(path)
     name = path.name
     in_home = relative_to_home(path)
@@ -1363,7 +1444,7 @@ def check_write_guardrail(path: Path) -> None:
 
     # Conferme: la configurazione di guardrail e di Claude Code non si modifica da
     # soli, sarebbe il modo elegante di aggirare un blocco (RULES-CORE.md, regola 8).
-    if name == ".guardrail.json":
+    if name.lower() == ".guardrail.json":
         ask(
             "modifica di .guardrail.json: cambia le regole di guardrail che ti vincolano. "
             "Decide l'utente, e il file va committato con la motivazione. (guardrail: RULES-CORE.md 8)"
@@ -1395,22 +1476,23 @@ def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
     """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
     .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
-    check_protected_writes(text)
-    if depth < MAX_DEPTH:
-        for payload in inline_shell_payloads(text):
-            check_bash_guardrail(payload, cwd, depth + 1)
-    if depth == 0:
-        for path in invoked_scripts(text, cwd):
-            try:
-                content = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            try:
-                check_bash_guardrail(content, cwd, depth=1)
-            except Decision as found:
-                if found.verdict == "deny":
-                    deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
-                ask(f"lo script {path.name} tocca la configurazione di guardrail o di Claude Code — {found.reason}")
+    check_protected_writes(text, cwd)
+    if depth >= MAX_DEPTH:
+        return
+    for payload in inline_shell_payloads(text):
+        check_bash_guardrail(payload, cwd, depth + 1)
+    # Ogni livello, non solo il primo: uno script può lanciarne un altro.
+    for path in invoked_scripts(text, cwd):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            check_bash_guardrail(content, cwd, depth + 1)
+        except Decision as found:
+            if found.verdict == "deny":
+                deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
+            ask(f"lo script {path.name} tocca la configurazione di guardrail o di Claude Code — {found.reason}")
 
 
 def check_write(tool_input: dict, cwd: str) -> None:
@@ -1473,7 +1555,17 @@ def decide(payload: dict) -> None:
     config = load_config(cwd)
 
     if tool == "Bash":
-        check_bash(str(tool_input.get("command", "")), config, cwd)
+        command = str(tool_input.get("command", ""))
+        try:
+            check_bash_guardrail(command, cwd)
+            sospesa = None
+        except Decision as found:
+            if found.verdict == "deny":
+                raise
+            sospesa = found
+        check_bash(command, config, cwd)
+        if sospesa:
+            raise sospesa
     elif tool == "Read":
         check_read(tool_input)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):

@@ -64,7 +64,8 @@ il comando: non risolve le variabili.
 | Scrittura su `.env*` (tranne `.example`/`.sample`/`.template`/`.dist`) e sugli altri file di segreti | CONFERMA |
 | Scrittura su un dotfile di primo livello della home (`~/.bashrc`, `~/.gitconfig`…) | CONFERMA |
 | Scrittura, da tool o da shell, su `.guardrail.json`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, `~/.claude/commands|skills|agents|rules` | CONFERMA |
-| Rimozione da shell di `.guardrail.json` (`rm`, `unlink`, `mv` come sorgente, `git rm`, `git mv`, `find … -delete`), anche dentro uno script lanciato | BLOCCO |
+| Rimozione da shell di `.guardrail.json` (`rm`, `unlink`, `mv` come sorgente, `git rm`, `git mv`, `find … -delete`), anche con un glob (`.guardrail*`), con maiuscole diverse, insieme alla cartella che lo contiene (`rm -rf progetto`, `git rm -r .`) o dentro uno script lanciato | BLOCCO |
+| Un secondo nome per `.guardrail.json` (`ln`, `cp -l`, `cp -s`) | BLOCCO |
 | Scrittura (Write/Edit) su `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md` e su `.claude/hooks|commands|skills|agents|rules` di un progetto | CONFERMA |
 | Scrittura, da tool o da shell, in `~/.claude/plugins` o `~/.claude/hooks` (il codice di guardrail stesso) | BLOCCO |
 | Scrittura (Write/Edit) fuori dal progetto corrente, dallo scratchpad e dalla memoria di Claude Code | CONFERMA |
@@ -110,8 +111,15 @@ il codice del plugin. Per guardrail è acceso qualunque voce si chiami
 `.guardrail.json`, non solo un file: un link a `/dev/null` al suo posto non lo
 spegne.
 
-**Limite dichiarato**: un interprete che non è una shell (`python3 -c
-"os.remove(…)"`) resta fuori, come per ogni altra regola.
+Si guarda anche dove porta un percorso: scrivere su `note.json` che è un link a
+`.guardrail.json` è scrivere su `.guardrail.json`. E dove guardrail è acceso
+queste regole vengono prima di `allow_commands`, che non le esenta.
+
+**Limite dichiarato**: sono espressioni regolari su un comando di shell, e una
+variante che non prevedono si trova sempre. Un interprete che non è una shell
+(`python3 -c "os.remove(…)"`) resta fuori, come per ogni altra regola; un
+`.guardrail.json` più profondo di due livelli sotto la cartella cancellata non
+viene cercato. Proteggono da un agente che sbaglia, non da uno che cerca il buco.
 
 L'ultima riga è la regola 5 resa esecutiva: il progetto è la root git della
 directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richiede

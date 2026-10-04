@@ -127,6 +127,7 @@
 {"name": "heredoc di dati non copre cio' che segue il tag", "tool_name": "Bash", "tool_input": {"command": "git commit -F - <<'EOF'\nmessaggio innocuo\nEOF\nrm -rf \"$BUILD\""}, "expect": "deny"}
 {"name": "script invocato con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/pericoloso.sh"}, "expect": "ask"}
 {"name": "script invocato direttamente con rsync --delete", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/pericoloso.sh"}, "expect": "ask"}
+{"name": "script invocato alla seconda riga di un comando", "tool_name": "Bash", "tool_input": {"command": "echo inizio\nbash tests/fixtures/pericoloso.sh"}, "expect": "ask", "reason_contains": "pericoloso.sh"}
 {"name": "script invocato innocuo: ok", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/innocuo.sh"}, "expect": "allow"}
 {"name": "python -c: ok", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(1)\""}, "expect": "allow"}
 {"name": "MCP prod UPDATE", "tool_name": "mcp__postgres__query", "tool_input": {"sql": "UPDATE utenti SET cognome = 'X' WHERE id = 1"}, "expect": "deny"}

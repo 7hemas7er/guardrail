@@ -94,7 +94,7 @@ def main() -> int:
         failures += check("spento: Write su ~/.claude/settings.json", esito(home, libero, tool=write(home / ".claude" / "settings.json")), "ask")
         failures += check("spento: il resto passa", esito(home, libero, tool=write(libero / "note.txt")), "allow")
         failures += check("spento: find -delete del .guardrail.json", esito(home, libero, tool=bash(f"find {scelto} -name .guardrail.json -delete")), "deny")
-        failures += check("spento: ln -sf al posto del .guardrail.json", esito(home, libero, tool=bash(f"ln -sf /dev/null {scelto}/.guardrail.json")), "ask")
+        failures += check("spento: ln -sf al posto del .guardrail.json", esito(home, libero, tool=bash(f"ln -sf /dev/null {scelto}/.guardrail.json")), "deny")
         impostazioni = write(scelto / ".claude" / "settings.local.json")
         failures += check("spento: Write sulle settings di un altro progetto", esito(home, libero, tool=impostazioni), "ask")
         failures += check("acceso: Write sulle settings del progetto", esito(home, scelto, tool=impostazioni), "ask")
@@ -108,6 +108,34 @@ def main() -> int:
         failures += check("acceso: script che toglie il .guardrail.json", esito(home, scelto, tool=bash("bash togli.sh")), "deny")
         (libero / "innocuo.sh").write_text('#!/bin/sh\nrm -rf "$X"\n', encoding="utf-8")
         failures += check("spento: script con altro dentro passa", esito(home, libero, tool=bash("bash innocuo.sh")), "allow")
+
+        # Uno script che ne lancia un altro: si legge anche il secondo.
+        (libero / "primo.sh").write_text("#!/bin/sh\nbash togli.sh\n", encoding="utf-8")
+        failures += check("spento: script che lancia lo script che toglie", esito(home, libero, tool=bash("bash primo.sh")), "deny")
+
+        # Glob, maiuscole, cartelle intere, secondi nomi.
+        failures += check("spento: rm con glob", esito(home, libero, tool=bash(f"rm {scelto}/.guardrail*")), "deny")
+        failures += check("spento: rm con maiuscole (NTFS)", esito(home, libero, tool=bash(f"rm {scelto}/.GUARDRAIL.JSON")), "deny")
+        failures += check("spento: rm *.json non prende i file nascosti", esito(home, libero, tool=bash(f"rm {scelto}/*.json")), "allow")
+        failures += check("spento: rm -rf del progetto acceso", esito(home, libero, tool=bash(f"rm -rf {scelto}")), "deny")
+        failures += check("spento: rm -rf della cartella sopra", esito(home, libero, tool=bash(f"rm -rf {cliente}")), "deny")
+        failures += check("acceso: git rm -r .", esito(home, scelto, tool=bash("git rm -r .")), "deny")
+        failures += check("acceso: mv del progetto", esito(home, scelto, tool=bash(f"mv {scelto} {home}/altrove")), "deny")
+        failures += check("acceso: rm -rf di una sottocartella normale", esito(home, scelto, tool=bash("rm -rf src")), "allow")
+        failures += check("spento: ln -s verso .guardrail.json", esito(home, libero, tool=bash(f"ln -s {scelto}/.guardrail.json note.json")), "deny")
+        failures += check("spento: cp -l di .guardrail.json", esito(home, libero, tool=bash(f"cp -l {scelto}/.guardrail.json copia.json")), "deny")
+        failures += check("spento: cp normale di .guardrail.json", esito(home, libero, tool=bash(f"cp {scelto}/.guardrail.json copia.json")), "allow")
+        (libero / "note.json").symlink_to(scelto / ".guardrail.json")
+        failures += check("spento: Write su un link al .guardrail.json", esito(home, libero, tool=write(libero / "note.json")), "ask")
+        failures += check("spento: redirect su un link al .guardrail.json", esito(home, libero, tool=bash("echo '{}' > note.json")), "ask")
+
+        # Dove è acceso, allow_commands non esenta la rimozione, e una conferma sul
+        # .guardrail.json non nasconde un blocco delle altre regole.
+        (scelto / ".guardrail.json").write_text('{"allow_commands": ["^rm "]}', encoding="utf-8")
+        failures += check("acceso: allow_commands non esenta la rimozione", esito(home, scelto, tool=bash("rm .guardrail.json")), "deny")
+        failures += check("acceso: conferma sul .guardrail.json + rm -rf $X: vince il blocco",
+                          esito(home, scelto, tool=bash('echo x >> .guardrail.json; cat nota | rm -rf "$X"')), "deny")
+        (scelto / ".guardrail.json").write_text("{}", encoding="utf-8")
 
         # Un link a /dev/null al posto del file non spegne guardrail.
         linkato = home / "linkato"
