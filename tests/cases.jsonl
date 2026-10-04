@@ -260,6 +260,9 @@
 {"name": "timeout con opzioni davanti a rm -rf di un path letterale: ok", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 rm -rf build"}, "expect": "allow"}
 {"name": "timeout con opzioni davanti a psql verso prod", "tool_name": "Bash", "tool_input": {"command": "timeout -k 5 60 psql -h db-produzione.esempio.com -c \"DELETE FROM t WHERE id = 1\""}, "expect": "deny"}
 {"name": "timeout davanti a bash -c: la stringa resta analizzata", "tool_name": "Bash", "tool_input": {"command": "timeout 10 bash -c 'rm -rf \"$X\"'"}, "expect": "deny"}
+{"name": "falso positivo 2026-10-04: bash -n e sh -n controllano la sintassi, non eseguono", "tool_name": "Bash", "tool_input": {"command": "bash -n tests/fixtures/senza_impronta.sh && sh -n tests/fixtures/senza_impronta.sh && echo ok"}, "expect": "allow"}
+{"name": "dash -n e poi l'esecuzione vera: lo script si legge", "tool_name": "Bash", "tool_input": {"command": "dash -n tests/fixtures/senza_impronta.sh && bash tests/fixtures/senza_impronta.sh"}, "expect": "ask"}
+{"name": "bash -ni: una shell interattiva ignora -n, lo script si legge", "tool_name": "Bash", "tool_input": {"command": "bash -ni tests/fixtures/senza_impronta.sh"}, "expect": "ask"}
 {"name": "falso positivo 2026-10-03: sed che toglie --delete, poi grep rsync", "tool_name": "Bash", "tool_input": {"command": "SP=/x; sed -i 's/rsync -a --delete-after /rsync -a /' $SP/sync.sh; grep rsync $SP/sync.sh"}, "expect": "allow"}
 {"name": "rsync --delete: il -n di un grep successivo non e' un dry-run", "tool_name": "Bash", "tool_input": {"command": "rsync -a --delete build/ user@host:/srv/www/ && grep -n x deploy.log"}, "expect": "deny"}
 {"name": "rsync --del, alias di --delete-during", "tool_name": "Bash", "tool_input": {"command": "rsync -a --del build/ user@host:/srv/www/"}, "expect": "deny"}

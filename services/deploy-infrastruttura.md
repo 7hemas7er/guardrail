@@ -65,7 +65,9 @@ Lo script invocato viene letto dal hook e scansionato con le stesse regole del
 comando diretto: un `rsync --delete` dentro `deploy.sh` vale quanto un
 `rsync --delete` scritto a mano. L'esito è una conferma, non un blocco, perché
 lo script lo ha scritto un umano e l'umano decide; fa eccezione un comando in
-`deny_commands`, che resta bloccato anche dentro uno script.
+`deny_commands`, che resta bloccato anche dentro uno script. Il controllo di
+sintassi (`bash -n deploy.sh`, `sh -n`, `dash -n`) non esegue niente, e non viene
+scansionato.
 
 Uno script che si lancia di continuo può essere approvato una volta sola, in
 `allow_scripts` di `.guardrail.json`, dichiarandone l'impronta sha256 (vedi

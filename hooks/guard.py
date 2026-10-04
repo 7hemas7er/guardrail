@@ -747,7 +747,8 @@ HEREDOC_INTERPRETER = re.compile(
 )
 
 SCRIPT_BY_INTERPRETER = re.compile(
-    r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+(?:-[\w=-]+\s+)*(?P<path>[^\s;&|()-][^\s;&|()]*)"
+    r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<interp>(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+"
+    r"(?P<flags>(?:-[\w=-]+\s+)*)(?P<path>[^\s;&|()-][^\s;&|()]*)"
 )
 SCRIPT_DIRECT = re.compile(r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<path>(?:\./|\.\./|~/)[^\s;&|()]+)")
 SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]+)")
@@ -769,10 +770,23 @@ def strip_interpreter_heredocs(text: str) -> str:
     return HEREDOC_INTERPRETER.sub(lambda m: m.group("head") + m.group("end"), text)
 
 
+def solo_sintassi(match: re.Match) -> bool:
+    """`bash -n script.sh`: la shell legge lo script e ne controlla la sintassi,
+    senza eseguirne niente. Scansionarlo come se partisse fermava proprio il
+    controllo che si fa prima di lanciarlo (falso positivo del 2026-10-03/04).
+    Con -i la shell è interattiva e -n non vale più."""
+    if not re.fullmatch(r"(?:ba|z|da|k)?sh", match.group("interp")):
+        return False
+    lettere = "".join(f[1:] for f in match.group("flags").split() if re.fullmatch(r"-[a-zA-Z]+", f))
+    return "n" in lettere and "i" not in lettere
+
+
 def invoked_scripts(text: str, cwd: str) -> list[Path]:
     found: list[Path] = []
     for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
         for match in regex.finditer(text):
+            if regex is SCRIPT_BY_INTERPRETER and solo_sintassi(match):
+                continue
             raw = match.group("path").strip("\"'")
             if "$" in raw:
                 continue
