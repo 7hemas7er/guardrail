@@ -2,7 +2,8 @@
 """Esegue hooks/guard.py su ogni caso di tests/cases.jsonl e confronta l'esito.
 
 Uso: python3 tests/run.py [-v]
-Esce 1 se anche un solo caso fallisce. Usa tests/guardrail.test.json come
+Esce 1 se anche un solo caso fallisce, o se il hook ci mette più di
+LIMITE_SECONDI a rispondere. Usa tests/guardrail.test.json come
 configurazione (via GUARDRAIL_CONFIG), così i test non dipendono dalla macchina.
 """
 import json
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GUARD = ROOT / "hooks" / "guard.py"
 CASES = ROOT / "tests" / "cases.jsonl"
 CONFIG = ROOT / "tests" / "guardrail.test.json"
+LIMITE_SECONDI = 3
 
 
 def run_case(case: dict) -> str:
@@ -37,14 +39,21 @@ def run_case(case: dict) -> str:
         HOME=os.environ.get("HOME", "/home/master"),
     )
     env.pop("GUARDRAIL_DISABLE", None)
-    proc = subprocess.run(
-        [sys.executable, str(GUARD)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
+    # Claude Code dà al hook 10 s (hooks/hooks.json): oltre, il verdetto non arriva.
+    # Un caso deve stare ben sotto, così una regex che esplode (backtracking) fallisce
+    # qui invece di passare con il verdetto giusto in 20 secondi.
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(GUARD)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=LIMITE_SECONDI,
+        )
+    except subprocess.TimeoutExpired:
+        return f"oltre {LIMITE_SECONDI} s", "", None
     if proc.returncode != 0:
         return f"exit {proc.returncode}: {proc.stderr.strip()[:200]}", "", None
     out = proc.stdout.strip()
