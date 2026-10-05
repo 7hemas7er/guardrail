@@ -43,6 +43,12 @@ il database, il contesto degli script di deploy.
 Nel dubbio, classifica come produzione: un falso positivo costa una conferma in
 più, un falso negativo costa un incidente.
 
+Un server che scrive solo testo (documenti, note, issue) e non tocca
+infrastruttura può andare in `prose_mcp_servers`: così un documento che nomina
+"produzione" non viene scambiato per una modifica alla produzione. Proponilo
+solo se l'utente lo conferma: il testo di quel server smette di contare per il
+controllo.
+
 ## 3. Proponi
 
 Mostra all'utente una tabella — voce, valore, perché l'hai classificata così —
@@ -52,6 +58,7 @@ e poi il `.guardrail.json` completo:
 {
   "prod_mcp_servers": [],
   "ask_mcp_servers": [],
+  "prose_mcp_servers": [],
   "prod_patterns": [],
   "deny_commands": [],
   "ask_commands": []

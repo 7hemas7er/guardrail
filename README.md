@@ -142,6 +142,7 @@ Put `.guardrail.json` in the repo root. Full example in
 |---|---|
 | `prod_mcp_servers` | exact names of MCP servers that are production: writes blocked |
 | `ask_mcp_servers` | shared servers: writes need confirmation |
+| `prose_mcp_servers` | exact names of MCP servers that only write text (docs, notes): the text in their content fields (`content`, `body`, `title`…) is not read for `prod_patterns`, so a document that mentions production is not taken for a production change. Ids and other parameters still count. On every other server the whole input counts |
 | `prod_patterns` | regexes that mark as production a `psql`/`mysql`/`pg_restore` command, an MCP server name, or the parameters of an MCP call (e.g. the Azure resource group) |
 | `deny_commands` | regexes on the Bash command: hard block |
 | `ask_commands` | regexes on the Bash command: confirmation |

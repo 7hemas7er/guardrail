@@ -60,6 +60,10 @@ DEFAULT_CONFIG = {
     "prod_mcp_servers": [],
     # Server MCP condivisi ma non prod: le scritture chiedono conferma.
     "ask_mcp_servers": [],
+    # Server MCP che scrivono testo (documenti, note): il testo dei loro campi di
+    # contenuto non conta per riconoscere un bersaglio di produzione. Solo per nome
+    # esatto, dichiarato da chi configura il progetto.
+    "prose_mcp_servers": [],
     # Regex aggiuntive sul comando Bash: blocco secco / conferma / eccezione.
     "deny_commands": [],
     "ask_commands": [],
@@ -1692,22 +1696,23 @@ def mcp_operation_text(tool: str, tool_input: dict) -> str:
     return " ".join(parts)
 
 
-# Campi che portano testo scritto da qualcuno (un documento, un commento, il corpo
-# di una issue), non il bersaglio dell'operazione. Una parola come "produzione"
-# lì dentro non dice dove va la modifica: il 2026-10-05 bloccava la scrittura di
-# un documento che parlava di produzione.
+# Campi in cui un server di `prose_mcp_servers` riceve il testo da scrivere.
 MCP_CONTENT_KEYS = frozenset(
     ("content", "body", "text", "markdown", "message", "description", "comment", "title", "intent", "summary", "notes")
 )
 
 
-def mcp_target_text(tool_input: dict) -> str:
+def mcp_target_text(tool_input: dict, prose: bool = False) -> str:
     """I parametri MCP come testo, per riconoscere un bersaglio di produzione.
 
-    Dei campi di contenuto si scarta solo il testo libero: un dict, una lista o una
-    stringa che è JSON lì dentro può portare il bersaglio (`body` di un tool REST) e
-    si legge. Niente ricorsione: un input annidato a fondo farebbe fallire il
-    controllo, e un errore interno lascia passare il tool.
+    Di default conta tutto: un `body` può portare il bersaglio in qualunque forma
+    (JSON, JSON5, form-encoded, testo), e provare a leggerla apre la porta alle
+    differenze fra il nostro parser e quello del server. Solo per un server che
+    scrive testo, dichiarato in `prose_mcp_servers`, le stringhe dei campi di
+    contenuto non contano: il 2026-10-05 un documento che parlava di produzione
+    veniva bloccato come modifica alla produzione. Gli identificativi restano.
+    Niente ricorsione: un input annidato a fondo farebbe fallire il controllo, e un
+    errore interno lascia passare il tool.
     """
     parts: list[str] = []
     stack: list[tuple[str, object]] = [("", tool_input)]
@@ -1719,16 +1724,8 @@ def mcp_target_text(tool_input: dict) -> str:
                 stack.append((str(k), v))
         elif isinstance(value, list):
             stack.extend((key, v) for v in value)
-        elif isinstance(value, str) and key.lower() in MCP_CONTENT_KEYS:
-            try:
-                parsed = json.loads(value)
-            except RecursionError:
-                parts.append(value)  # non si legge: conta il testo intero
-                continue
-            except ValueError:
-                continue
-            if isinstance(parsed, (dict, list)):
-                stack.append(("", parsed))
+        elif prose and isinstance(value, str) and key.lower() in MCP_CONTENT_KEYS:
+            continue
         elif value is not None:
             parts.append(str(value))
     return " ".join(parts)
@@ -1795,7 +1792,8 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     if MCP_READ_TOOL.match(tool):
         return
     operation = MCP_BROWSER_CLOSE.sub(" ", mcp_operation_text(tool, tool_input))
-    targets_prod = is_prod or matches_any(config["prod_patterns"], mcp_target_text(tool_input)) is not None
+    prose = server in config["prose_mcp_servers"]
+    targets_prod = is_prod or matches_any(config["prod_patterns"], mcp_target_text(tool_input, prose)) is not None
 
     if MCP_DESTRUCTIVE.search(operation):
         if targets_prod:

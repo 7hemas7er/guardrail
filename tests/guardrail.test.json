@@ -1,6 +1,7 @@
 {
   "prod_mcp_servers": ["postgres", "telemetria"],
   "ask_mcp_servers": ["postgres-test"],
+  "prose_mcp_servers": ["claude_ai_Claude_Docs", "github"],
   "prod_patterns": ["db-produzione\\.esempio\\.com", "\\bappdb\\b(?!_)"],
   "deny_commands": ["scripts/deploy/(promote-to-production|rollback-production)\\.sh"],
   "ask_commands": ["scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh"],
