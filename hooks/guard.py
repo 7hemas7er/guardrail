@@ -2056,6 +2056,11 @@ def log_decision(payload: dict, verdict: str, reason: str) -> None:
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
+    except RecursionError:
+        # Un input annidato oltre quanto il parser regge non si può giudicare. Lasciarlo
+        # passare vorrebbe dire che basta annidare un comando per saltare ogni controllo.
+        emit("deny", "input del tool annidato troppo a fondo per essere controllato.")
+        return 0
     except ValueError:
         return 0
     if not isinstance(payload, dict):

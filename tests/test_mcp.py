@@ -47,6 +47,16 @@ CASI = [
 ]
 
 
+def esito_grezzo(testo: str) -> tuple[str, int]:
+    """Come esito(), ma con l'input già serializzato: json.dumps non regge la profondità
+    che serve a far cedere il parser del hook."""
+    env = dict(os.environ, GUARDRAIL_CONFIG=str(ROOT / "tests" / "guardrail.test.json"))
+    env.pop("GUARDRAIL_DISABLE", None)
+    proc = subprocess.run([sys.executable, str(GUARD)], input=testo, capture_output=True, text=True, env=env, check=False)
+    out = proc.stdout.strip()
+    return (json.loads(out)["hookSpecificOutput"].get("permissionDecision", "allow") if out else "allow"), proc.returncode
+
+
 def main() -> int:
     for nome, tool_input, atteso in CASI:
         ottenuto, errore = esito(tool_input)
@@ -54,6 +64,18 @@ def main() -> int:
             print(f"FAIL  atteso={atteso} ottenuto={ottenuto}  {nome}\n      {errore[:200]}")
             return 1
         print(f"ok    {nome}")
+
+    # Oltre il limite del parser JSON il hook non può leggere l'input: deve bloccare.
+    profondo = 200_000
+    testo = (
+        '{"tool_name": "Bash", "session_id": "test", "tool_input": {"command": "true", "x": '
+        + '{"x": ' * profondo + "0" + "}" * profondo + "}}"
+    )
+    ottenuto, codice = esito_grezzo(testo)
+    if ottenuto != "deny" or codice != 0:
+        print(f"FAIL  atteso=deny ottenuto={ottenuto} exit={codice}  input oltre il limite del parser")
+        return 1
+    print("ok    input oltre il limite del parser: bloccato")
     return 0
 
 
