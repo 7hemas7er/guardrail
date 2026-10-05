@@ -1701,15 +1701,37 @@ MCP_CONTENT_KEYS = frozenset(
 )
 
 
-def mcp_target_text(value, key: str = "") -> str:
-    """I parametri MCP come testo, senza i sotto-alberi dei campi di contenuto."""
-    if key.lower() in MCP_CONTENT_KEYS:
-        return ""
-    if isinstance(value, dict):
-        return " ".join(f"{k} {mcp_target_text(v, str(k))}" for k, v in value.items())
-    if isinstance(value, list):
-        return " ".join(mcp_target_text(v, key) for v in value)
-    return "" if value is None else str(value)
+def mcp_target_text(tool_input: dict) -> str:
+    """I parametri MCP come testo, per riconoscere un bersaglio di produzione.
+
+    Dei campi di contenuto si scarta solo il testo libero: un dict, una lista o una
+    stringa che è JSON lì dentro può portare il bersaglio (`body` di un tool REST) e
+    si legge. Niente ricorsione: un input annidato a fondo farebbe fallire il
+    controllo, e un errore interno lascia passare il tool.
+    """
+    parts: list[str] = []
+    stack: list[tuple[str, object]] = [("", tool_input)]
+    while stack:
+        key, value = stack.pop()
+        if isinstance(value, dict):
+            for k, v in value.items():
+                parts.append(str(k))
+                stack.append((str(k), v))
+        elif isinstance(value, list):
+            stack.extend((key, v) for v in value)
+        elif isinstance(value, str) and key.lower() in MCP_CONTENT_KEYS:
+            try:
+                parsed = json.loads(value)
+            except RecursionError:
+                parts.append(value)  # non si legge: conta il testo intero
+                continue
+            except ValueError:
+                continue
+            if isinstance(parsed, (dict, list)):
+                stack.append(("", parsed))
+        elif value is not None:
+            parts.append(str(value))
+    return " ".join(parts)
 
 
 def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:

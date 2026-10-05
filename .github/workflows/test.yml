@@ -21,7 +21,7 @@ jobs:
           done
       - name: sintassi hook
         run: |
-          python3 -m py_compile hooks/guard.py hooks/mask.py hooks/session-start.py tests/run.py tests/test_session_start.py tests/test_mask.py tests/test_attivazione.py
+          python3 -m py_compile hooks/guard.py hooks/mask.py hooks/session-start.py tests/run.py tests/test_session_start.py tests/test_mask.py tests/test_attivazione.py tests/test_mcp.py
           bash -n hooks/run-python.sh tests/fixtures/*.sh
       - name: casi del hook guard.py
         run: python3 tests/run.py -v
@@ -29,6 +29,8 @@ jobs:
         run: python3 tests/test_mask.py
       - name: attivazione per progetto
         run: python3 tests/test_attivazione.py
+      - name: MCP con input annidato a fondo
+        run: python3 tests/test_mcp.py
       - name: session-start (regole, avvisi una tantum)
         run: python3 tests/test_session_start.py
       - name: session-start via run-python.sh
