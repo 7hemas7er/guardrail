@@ -1692,6 +1692,26 @@ def mcp_operation_text(tool: str, tool_input: dict) -> str:
     return " ".join(parts)
 
 
+# Campi che portano testo scritto da qualcuno (un documento, un commento, il corpo
+# di una issue), non il bersaglio dell'operazione. Una parola come "produzione"
+# lì dentro non dice dove va la modifica: il 2026-10-05 bloccava la scrittura di
+# un documento che parlava di produzione.
+MCP_CONTENT_KEYS = frozenset(
+    ("content", "body", "text", "markdown", "message", "description", "comment", "title", "intent", "summary", "notes")
+)
+
+
+def mcp_target_text(value, key: str = "") -> str:
+    """I parametri MCP come testo, senza i sotto-alberi dei campi di contenuto."""
+    if key.lower() in MCP_CONTENT_KEYS:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(f"{k} {mcp_target_text(v, str(k))}" for k, v in value.items())
+    if isinstance(value, list):
+        return " ".join(mcp_target_text(v, key) for v in value)
+    return "" if value is None else str(value)
+
+
 def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     match = MCP_TOOL.match(tool_name)
     if not match:
@@ -1753,8 +1773,7 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     if MCP_READ_TOOL.match(tool):
         return
     operation = MCP_BROWSER_CLOSE.sub(" ", mcp_operation_text(tool, tool_input))
-    parameters = json.dumps(tool_input, ensure_ascii=False)
-    targets_prod = is_prod or matches_any(config["prod_patterns"], parameters) is not None
+    targets_prod = is_prod or matches_any(config["prod_patterns"], mcp_target_text(tool_input)) is not None
 
     if MCP_DESTRUCTIVE.search(operation):
         if targets_prod:
