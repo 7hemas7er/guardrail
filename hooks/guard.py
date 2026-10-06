@@ -428,6 +428,7 @@ PROTECTED_PATH = re.compile(
     r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)",
     re.I,  # su NTFS (WSL, /mnt/c) .GUARDRAIL.JSON è lo stesso file
 )
+PLUGIN_DATA = re.compile(r"(?:^|/)\.claude/plugins/data/", re.I)
 SHELL_WRITER_CMDS = re.compile(
     r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b"
 )
@@ -647,6 +648,12 @@ def write_targets(segment: str) -> list[str]:
         return targets
     if mode == "last" and not any(f in ("-t", "--target-directory") for f in flags):
         operands = operands[-1:]
+    if mode == "opaque":
+        # Uno script che riceve il path di un log di plugin lo legge: `.claude/plugins/data/`
+        # sono i dati dei plugin (log, stato), non il loro codice. Falso positivo del
+        # 2026-10-07: `node join.ts ~/.claude/plugins/data/…/log.jsonl` negato come
+        # modifica dei plugin. Chi ci scrive davvero (tee, cp, rm, sed -i, `>`) resta visto.
+        operands = [a for a in operands if not PLUGIN_DATA.search(a)]
     return targets + operands
 
 
