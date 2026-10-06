@@ -1003,10 +1003,22 @@ def riscrivi_heredoc(text: str, da_tagliare) -> str:
     return "".join(pezzi)
 
 
+def espande_sostituzioni(m: re.Match) -> bool:
+    """Tag senza virgolette e `$(` o un backtick nel corpo: la shell li esegue prima di
+    passare il testo a chiunque. Il corpo allora non si toglie, resta analizzato per
+    intero, come prima del passo 3. Le sostituzioni che riscrivi_heredoc estrae sono
+    un controllo in più, non questo: se l'estrazione ne perdesse una, il corpo intero
+    la mostra comunque."""
+    corpo = m.group("body")
+    return not m.group("q") and ("$(" in corpo or "`" in corpo)
+
+
 def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
     """`cat > x <<EOF`, `tee x <<EOF`, `git commit -F - <<EOF`: il corpo si archivia."""
     # `tee x <<'EOF' >(bash)`: tee scrive anche nella process substitution.
     if "|" in m.group("dopo") or ">(" in m.group("dopo"):
+        return False
+    if espande_sostituzioni(m):
         return False
     nome, args, uscita = ricevente
     if nome == "cat":
@@ -1083,6 +1095,7 @@ def strip_inert_heredocs(text: str) -> str:
             INTERPRETERS_WITHOUT_SHELL.fullmatch(ricevente[0]) is not None
             and not SPAWNS_PROCESS.search(m.group("body"))
             and not stdin_a_una_shell(m, ricevente)
+            and not espande_sostituzioni(m)
         )
 
     return riscrivi_heredoc(text, inerte)

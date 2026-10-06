@@ -365,7 +365,7 @@
 {"name": "heredoc Python che lancia un comando innocuo resta allow", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['git', 'status'])\nPY"}, "expect": "allow"}
 {"name": "heredoc di dati con tag fra virgolette: backtick e $( ) sono testo", "tool_name": "Bash", "tool_input": {"command": "cat > note.md <<'EOF'\nNon lanciare `rm -rf ~` ne' $(rm -rf ~): sono esempi.\nEOF"}, "expect": "allow"}
 {"name": "git commit -F - con tag fra virgolette e $( ) citato", "tool_name": "Bash", "tool_input": {"command": "git commit -F - <<'EOF'\nfix(hook): blocca $(rm -rf ~) e `rm -rf ~`\nEOF"}, "expect": "allow"}
-{"name": "heredoc senza virgolette con sostituzioni innocue resta allow", "tool_name": "Bash", "tool_input": {"command": "cat > data.txt <<EOF\noggi e' `date` su $(hostname)\nrm -rf ~ qui e' solo testo\nEOF"}, "expect": "allow"}
+{"name": "heredoc senza virgolette con $( ) o backtick: il corpo resta analizzato per intero, come su main (anche il testo)", "tool_name": "Bash", "tool_input": {"command": "cat > data.txt <<EOF\noggi e' `date` su $(hostname)\nrm -rf ~ qui e' solo testo\nEOF"}, "expect": "deny"}
 {"name": "backtick innocuo resta allow", "tool_name": "Bash", "tool_input": {"command": "echo build del `date +%F`"}, "expect": "allow"}
 {"name": "backtick fra apici singoli e' testo", "tool_name": "Bash", "tool_input": {"command": "echo 'usa `rm -rf ~` solo a mano'"}, "expect": "allow"}
 {"name": "heredoc Python che cita os.system in un commento e in una stringa non passata", "tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\n# non usare os.system('rm -rf ~')\nprint(\"os.system('rm -rf ~')\")\nnota = 'subprocess.run(\"rm -rf ~\", shell=True)'\nPY"}, "expect": "allow"}
