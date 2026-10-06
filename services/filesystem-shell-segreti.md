@@ -79,20 +79,34 @@ non viene declassato a conferma, come invece accade per uno script invocato.
 Citare non è eseguire: in `grep "bash -c 'rm -rf'"` il comando è `grep`, e non
 succede niente.
 
-**Limite dichiarato**: un interprete che *non* è una shell resta quasi del tutto
-fuori. Del codice passato come stringa (`python3 -c`, `node -e`) e degli heredoc
-diretti a Python o Node il hook guarda una cosa sola: se chiama API che scrivono
-o lanciano processi. Se no, le stringhe che contiene sono dati: un heredoc Python
-che corregge un README con dentro `find . -delete` non lo esegue, e un `node -e`
-che legge un file sotto `.claude/plugins` non lo modifica. Se sì, un
-`python3 -c` che nomina `.guardrail.json` o le settings chiede conferma, e il
-corpo dell'heredoc resta analizzato dalle regole della shell. Ma
-`os.system('rm -rf ~')` non viene riconosciuto come `rm -rf ~` — indovinare il
-senso di un linguaggio arbitrario sarebbe peggio che dichiarare il buco. Un progetto può stringere con
+**Limite dichiarato**: un interprete che *non* è una shell resta in gran parte
+fuori. Del codice passato come stringa (`python3 -c`, `node -e`) il hook guarda
+una cosa sola: se chiama API che scrivono o lanciano processi. Se no, le stringhe
+che contiene sono dati, e un `node -e` che legge un file sotto
+`.claude/plugins` non lo modifica. Se sì, un `python3 -c` che nomina
+`.guardrail.json` o le settings chiede conferma. Negli heredoc diretti a Python
+o Node (`python3 - <<'PY'`, `node <<'JS'`, e `node -e 'eval(…readFileSync(0…))'`
+dove il corpo è il programma) il hook va più a fondo: ne legge il codice, salta
+commenti e stringhe che nessuno passa, e le stringhe **letterali** date a
+`os.system`, `os.popen`, `subprocess.*(…, shell=True)`, `subprocess.getoutput`,
+`child_process.exec`/`execSync` (e `spawn`/`execFile` con `shell`) le giudica come
+comandi Bash, con le stesse regole, quelle di progetto comprese e con lo stesso
+tetto di profondità: `os.system('rm -rf ~')` vale `rm -rf ~`. Una stringa
+costruita (`'rm -rf ' + d`, un f-string, `%s`, `${x}`) conta con un segnaposto di
+variabile al posto di ciò che non si legge, e una variabile in un comando
+distruttivo è vietata. Una lista di argomenti senza shell
+(`subprocess.run(['git', 'status'])`) non lancia una shell e resta ammessa.
+`eval`/`exec` di un letterale si leggono come codice a loro volta. Restano
+fuori: un comando che il codice costruisce senza nessun letterale
+(`os.system(cmd)`), la stessa lettura dentro `python3 -c "…"` o `node -e '…'`
+(lì valgono solo i controlli sui path protetti), Ruby, Perl, PHP e R, e un
+programma che confonde il lettore (una regex JavaScript con un apice dentro:
+se le virgolette non tornano si rilegge tutto senza saltare niente, ma una
+stringa bilanciata ad arte nasconde la chiamata). Un progetto può stringere con
 una regola sua in `deny_commands` (es. `os\.system`), ma sappia che vale per
 `python3 -c "…"` e **non** dentro un heredoc: là il corpo è escluso dalle regex
 di progetto di proposito, perché un path citato in uno script non è un path
-eseguito.
+eseguito; le stringhe che quel codice passa alla shell, invece, le vedono.
 
 Le letture di segreti sono presidiate sia sul tool `Read` sia sulla shell: le
 `permissions.deny` delle impostazioni valgono solo per `Read`, e un `cat .env`
@@ -140,14 +154,23 @@ directory di lavoro; tutto ciò che sta fuori (home, altri repo, `/opt`) richied
 una conferma. Lo scratchpad della sessione e la memoria di Claude Code
 (`~/.claude/projects`) sono aree di lavoro legittime e non la richiedono.
 
-Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`) contiene dati, e
-il hook non lo legge come comandi — citare `rm -rf ~` in una guida non è
-eseguirlo; a meno che ciò che scrive finisca in una shell (`tee x <<EOF | bash`),
-o che il tag sia senza virgolette e il corpo contenga `$(`. Chi riceve l'heredoc
-si legge come lo legge la shell, virgolette comprese: se la riga non si capisce,
-il corpo resta analizzato. Uno che alimenta una shell (`bash <<EOF`) resta comandi a tutti gli
-effetti. Uno che alimenta Python o Node (`python - <<PY`, `node <<JS`) solo se il
-codice lancia processi, o se il tag non è fra virgolette e il corpo contiene `$(`
-o un backtick, che la shell esegue prima di passarlo all'interprete; Ruby, Perl e
-PHP restano sempre analizzati. Uno script scritto su file e poi lanciato viene
+Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`, `git commit -F -
+<<EOF`) contiene dati, e il hook non lo legge come comandi — citare `rm -rf ~`
+in una guida non è eseguirlo; a meno che ciò che scrive finisca in una shell
+(`tee x <<EOF | bash`, `tee x <<'EOF' >(bash)`: tee scrive anche nella process
+substitution). Con il tag **senza virgolette**, invece, la shell esegue `$(…)` e
+i backtick del corpo *prima* di darlo a chiunque, `cat` e `git` compresi: di quel
+corpo il hook toglie il testo e tiene le sostituzioni, che giudica come comandi
+(e che le regole di progetto vedono), qualunque sia il ricevente, interpreti
+compresi. Con il tag fra virgolette sono testo. I backtick fuori da un heredoc
+valgono come `$(…)`, tranne fra apici singoli e nei commenti. Chi riceve
+l'heredoc si legge come lo legge la shell, virgolette comprese: se la riga non si
+capisce, il corpo resta analizzato. Uno che alimenta una shell (`bash <<EOF`)
+resta comandi a tutti gli effetti. Uno che alimenta Python o Node (`python - <<PY`,
+`node <<JS`) è un programma: se lancia processi il corpo resta analizzato anche
+come testo di shell, e le stringhe date ai lanciatori si giudicano come sopra.
+Se il codice è passato con `-c`/`-e` e legge lo stdin lanciando processi
+(`python3 -c 'import os; os.system(input())' <<EOF`), il corpo è un comando di
+shell e resta analizzato per intero. Ruby, Perl e PHP restano sempre analizzati.
+Uno script scritto su file e poi lanciato viene
 scansionato al momento del lancio (vedi deploy-infrastruttura.md).
