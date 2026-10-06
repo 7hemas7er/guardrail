@@ -552,6 +552,7 @@ class _Lettore:
         self.attesa: str | None = None  # la redirezione che aspetta il suo bersaglio
         self.heredoc: list[tuple[str, bool]] = []  # (tag, fra virgolette) degli heredoc aperti sulla riga
         self.inizio = 0
+        self.riga_da = 0  # quanti comandi erano già in `trovati` quando la riga è cominciata
 
     def aggiungi(self, pezzo: str, citato: bool = False) -> None:
         self.pezzi.append(pezzo)
@@ -587,16 +588,17 @@ class _Lettore:
         self.attesa = None
         self.inizio = fine + 1
 
-    def corpi_heredoc(self, pos: int, ricevente: str) -> int:
+    def corpi_heredoc(self, pos: int, di_dati: bool) -> int:
         """Il corpo degli heredoc aperti sulla riga che finisce, da `pos` fino al tag.
         Ogni riga si legge da sola, senza il contesto di virgolette delle altre: il
         corpo non è sintassi di shell (un `'` in un testo non apre niente), ma può
         essere codice che una shell riceve, e una riga che comincia con `rm` va vista."""
         t = self.testo
         for tag, citato in self.heredoc:
-            # Con il tag fra virgolette la shell non espande il corpo: `$(…)`, backtick,
-            # `(` e `;` sono testo, a meno che chi lo riceve non sia una shell che lo esegue.
-            letterale = citato and ricevente not in SHELL_RICEVENTI
+            # Con il tag fra virgolette la shell non espande il corpo, ma chi lo riceve
+            # può eseguirlo. È testo solo se lo riceve un comando che archivia dati
+            # (`riceve_dati`); per chiunque altro il corpo resta analizzato.
+            letterale = citato and di_dati
             while pos < len(t):
                 fine = t.find("\n", pos)
                 fine = len(t) if fine < 0 else fine
@@ -665,12 +667,17 @@ class _Lettore:
                 i += 1
             elif c == "\n":
                 self.chiudi_parola()
-                ricevente = comando_effettivo(self.parole).nome if self.heredoc else ""
+                # Un solo comando sulla riga, e che archivia dati: con `;`, `|` o `&&` il
+                # corpo potrebbe andare a un altro, e allora resta analizzato.
+                di_dati = (
+                    bool(self.heredoc) and len(self.trovati) == self.riga_da and riceve_dati(comando_effettivo(self.parole))
+                )
                 self.chiudi_comando(i)
                 i += 1
                 if self.heredoc:
-                    i = self.corpi_heredoc(i, ricevente)
+                    i = self.corpi_heredoc(i, di_dati)
                     self.inizio = i
+                self.riga_da = len(self.trovati)
             elif c == "\\":
                 if i + 1 < n and t[i + 1] != "\n":
                     self.aggiungi(t[i + 1], True)
@@ -723,8 +730,22 @@ def _leggi(testo: str, prof: int) -> list[Comando]:
     return _Lettore(testo, prof).esegui()
 
 
-# Chi riceve un heredoc e lo esegue: il corpo è codice, anche con il tag fra virgolette.
-SHELL_RICEVENTI = frozenset({"bash", "sh", "zsh", "dash", "ksh", "ash", "eval", "source", ".", "xargs"})
+def riceve_dati(comando: Effettivo) -> bool:
+    """Il comando archivia il corpo di un heredoc invece di eseguirlo: `cat`, `tee`,
+    `git`/`gh` con `-F -`. Elenco chiuso di proposito: chi non c'è (una shell, ssh,
+    un interprete, un comando sconosciuto) potrebbe eseguirlo, e il corpo resta
+    analizzato. L'elenco inverso, quello delle shell, lasciava passare chi mancava."""
+    if comando.lanciatori:
+        return False
+    if comando.nome in ("cat", "tee"):
+        return True
+    if comando.nome in ("git", "gh"):
+        args = comando.args
+        return any(
+            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
+            for i, a in enumerate(args)
+        )
+    return False
 
 
 @functools.lru_cache(maxsize=64)

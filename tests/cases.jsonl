@@ -430,3 +430,6 @@
 {"name": "corpo di una PR con il tag senza virgolette e backtick: la shell lo espande", "tool_name": "Bash", "tool_input": {"command": "gh pr create --title fix --body \"$(cat <<EOF\nVieta `rm -rf ~`\nEOF\n)\""}, "expect": "deny"}
 {"name": "git commit -m con heredoc fra virgolette dentro \"$( )\": il messaggio è testo", "tool_name": "Bash", "tool_input": {"command": "git commit -m \"$(cat <<'EOF'\nfix: vieta `rm -rf \"$X\"` e $(rm -rf ~)\nEOF\n)\""}, "expect": "allow"}
 {"name": "heredoc fra virgolette dentro \"$( )\" che alimenta bash: il corpo è codice", "tool_name": "Bash", "tool_input": {"command": "echo \"$(bash <<'EOF'\nrm -rf ~\nEOF\n)\""}, "expect": "deny"}
+{"name": "heredoc con il tag fra virgolette a un comando sconosciuto: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "mytool <<'EOF'\nx; rm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc con il tag fra virgolette a ssh: il corpo resta analizzato", "tool_name": "Bash", "tool_input": {"command": "ssh host <<'EOF'\nx; rm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc con il tag fra virgolette a cat > file: il corpo e' testo", "tool_name": "Bash", "tool_input": {"command": "cat > note.md <<'EOF'\nx; rm -rf ~\nEOF"}, "expect": "allow"}
