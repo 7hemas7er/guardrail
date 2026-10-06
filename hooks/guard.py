@@ -1004,13 +1004,13 @@ def riscrivi_heredoc(text: str, da_tagliare) -> str:
 
 
 def espande_sostituzioni(m: re.Match) -> bool:
-    """Tag senza virgolette e `$(` o un backtick nel corpo: la shell li esegue prima di
-    passare il testo a chiunque. Il corpo allora non si toglie, resta analizzato per
-    intero, come prima del passo 3. Le sostituzioni che riscrivi_heredoc estrae sono
-    un controllo in più, non questo: se l'estrazione ne perdesse una, il corpo intero
-    la mostra comunque."""
+    """Tag senza virgolette e un `$` o un backtick nel corpo: la shell espande il corpo
+    prima di passarlo a chiunque, e le forme di espansione sono più di `$(…)`. Il
+    corpo allora non si toglie, resta analizzato per intero. Le sostituzioni che
+    riscrivi_heredoc estrae sono un controllo in più, non questo: se l'estrazione ne
+    perdesse una, il corpo intero la mostra comunque."""
     corpo = m.group("body")
-    return not m.group("q") and ("$(" in corpo or "`" in corpo)
+    return not m.group("q") and ("$" in corpo or "`" in corpo)
 
 
 def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:

@@ -394,3 +394,5 @@
 {"name": "bash con heredoc fra virgolette e backtick nel corpo: li esegue bash", "tool_name": "Bash", "tool_input": {"command": "bash <<'EOF'\necho `rm -rf ~`\nEOF"}, "expect": "deny"}
 {"name": "tag fra virgolette, shell dietro un lanciatore: i backtick del corpo restano comandi", "tool_name": "Bash", "tool_input": {"command": "nice -n 5 bash <<'EOF'\necho `rm -rf ~`\nEOF"}, "expect": "deny"}
 {"name": "tag fra virgolette, ricevente sconosciuto: i backtick del corpo restano comandi", "tool_name": "Bash", "tool_input": {"command": "mytool <<'EOF'\necho `rm -rf ~`\nEOF"}, "expect": "deny"}
+{"name": "heredoc senza virgolette con un'espansione $ qualunque nel corpo: resta analizzato per intero", "tool_name": "Bash", "tool_input": {"command": "cat > x.txt <<EOF\n${HOME}\nrm -rf ~\nEOF"}, "expect": "deny"}
+{"name": "heredoc senza virgolette senza $ ne' backtick: il corpo e' testo", "tool_name": "Bash", "tool_input": {"command": "cat > x.txt <<EOF\nMai rm -rf ~\nEOF"}, "expect": "allow"}
