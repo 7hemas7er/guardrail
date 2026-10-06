@@ -741,10 +741,7 @@ def riceve_dati(comando: Effettivo) -> bool:
         return True
     if comando.nome in ("git", "gh"):
         args = comando.args
-        return any(
-            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
-            for i, a in enumerate(args)
-        )
+        return git_legge_stdin(args)
     return False
 
 
@@ -923,6 +920,29 @@ DANGEROUS_RM_TARGET = re.compile(
 FIND_ESEGUE = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
+def eseguiti_da_find(e: Effettivo) -> list[Effettivo]:
+    """I comandi che un find lancia con `-exec`/`-execdir`/`-ok`/`-okdir`. Per la shell
+    sono argomenti di find (il `;` è escapato), quindi `effettivi()` non li vede."""
+    if e.nome != "find":
+        return []
+    args, eseguiti, k = list(e.args), [], 0
+    while k < len(args):
+        if args[k] in FIND_ESEGUE:
+            fine = k + 1
+            while fine < len(args) and args[fine] not in (";", "+"):
+                fine += 1
+            eseguiti.append(comando_effettivo(args[k + 1:fine]))
+            k = fine
+        k += 1
+    return eseguiti
+
+
+def effettivi_e_find(testo: str) -> list[Effettivo]:
+    """`effettivi(testo)` più i comandi lanciati da find: per i controlli su un comando
+    ovunque compaia, come `sudo rm` dentro `find … -exec sudo rm {} +`."""
+    return [s for e in effettivi(testo) for s in (e, *eseguiti_da_find(e))]
+
+
 def find_che_cancella(e: Effettivo) -> list[str] | None:
     """Le radici di un find che cancella (`-delete`, o `-exec`/`-execdir` di rm, anche
     dietro `command`, `sudo`…, o di un rsync --delete), o None se non cancella o `e`
@@ -933,20 +953,11 @@ def find_che_cancella(e: Effettivo) -> list[str] | None:
     k = 0
     while k < len(args) and not args[k].startswith("-") and args[k] not in ("(", "!"):
         k += 1
-    radici, cancella = args[:k] or ["."], False
-    while k < len(args):
-        if args[k] == "-delete":
-            cancella = True
-        elif args[k] in FIND_ESEGUE:
-            fine = k + 1
-            while fine < len(args) and args[fine] not in (";", "+"):
-                fine += 1
-            eseguito = comando_effettivo(args[k + 1:fine])
-            cancella = cancella or eseguito.nome == "rm" or (
-                eseguito.nome == "rsync" and any(a.startswith("--delete") for a in eseguito.args)
-            )
-            k = fine
-        k += 1
+    radici = args[:k] or ["."]
+    cancella = "-delete" in args[k:] or any(
+        s.nome == "rm" or (s.nome == "rsync" and any(a.startswith("--delete") for a in s.args))
+        for s in eseguiti_da_find(e)
+    )
     return radici if cancella else None
 
 
@@ -1012,7 +1023,8 @@ SECRET_READERS = frozenset(
     {"cat", "bat", "tac", "less", "more", "head", "tail", "nl", "od", "xxd", "strings", "grep", "egrep",
      "fgrep", "rg", "ag", "awk", "sed", "cut", "base64", "jq", "tee"}
 )
-SECRET_SOURCERS = frozenset({"source", "."})
+# `source f` e `. f`: leggono un file nella shell corrente (segreti e script).
+COMANDI_SOURCE = frozenset({"source", "."})
 # Comandi il cui primo operando è un'espressione, non un file: in
 # `grep "\.env" casi.jsonl` quel `.env` è una regex e non si legge nessun segreto.
 PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "perl"}
@@ -1262,7 +1274,7 @@ def check_secret_reads(text: str) -> None:
                 "nella trascrizione, che resta su disco. Per il nome di una variabile leggi "
                 ".env.example; per il valore, chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
             )
-        if found and e.nome in SECRET_SOURCERS:
+        if found and e.nome in COMANDI_SOURCE:
             ask(
                 f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
                 "del comando. Conferma che è voluto?"
@@ -1538,6 +1550,14 @@ HEREDOC = re.compile(
 GIT_STDIN_FLAGS = ("-F", "--file", "--body-file", "--notes-file")
 
 
+def git_legge_stdin(args) -> bool:
+    """git/gh legge il testo dallo stdin: `-F -` o `--file=-` e simili."""
+    return any(
+        (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
+        for i, a in enumerate(args)
+    )
+
+
 def riscrivi_heredoc(text: str, da_tagliare) -> str:
     """Toglie il corpo degli heredoc per cui `da_tagliare(m, ricevente)` è vero.
 
@@ -1576,10 +1596,7 @@ def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool
     if nome == "tee":
         return True
     if nome in ("git", "gh"):
-        return any(
-            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
-            for i, a in enumerate(args)
-        )
+        return git_legge_stdin(args)
     return False
 
 # Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
@@ -1613,7 +1630,6 @@ INTERPRETERS_WITHOUT_SHELL = re.compile(r"python[\d.]*|node|Rscript")
 # (`comando_effettivo`): `nohup bash x.sh`, `timeout 60 python3 x.py`, `/bin/bash x.sh`.
 SCRIPT_INTERPRETER = re.compile(r"(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby")
 SHELL_INTERPRETER = re.compile(r"(?:ba|z|da|k)?sh")
-SCRIPT_SORGENTI = frozenset({"source", "."})
 
 
 def strip_data_heredocs(text: str) -> str:
@@ -1666,7 +1682,7 @@ def script_nominato(e: Effettivo) -> str | None:
     un'opzione), `source x.sh` / `. x.sh`."""
     if not e.nome:
         return None
-    if e.nome in SCRIPT_SORGENTI:
+    if e.nome in COMANDI_SOURCE:
         return e.args[0] if e.args else None
     if e.parole[0].startswith(("./", "../", "~/")):
         return e.parole[0]
@@ -1851,22 +1867,23 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
     check_inline_shell(text, config, cwd, depth)
+    # Prima di check_rm: un `find -exec sudo rm` lì sarebbe solo una conferma.
+    if any(e.nome == "rm" and e.con_privilegi for e in effettivi_e_find(text)):
+        deny("sudo/doas rm: cancellazioni con privilegi non passano dall'agente.")
     check_rm(text)
     check_secret_reads(text)
     check_protected_writes(text, cwd)
 
     # Distruzione di sistema o supply chain
-    if any(e.nome == "rm" and e.con_privilegi for e in effettivi(text)):
-        deny("sudo/doas rm: cancellazioni con privilegi non passano dall'agente.")
     if re.search(r"\b(mkfs(\.\w+)?|dd\s+[^|;]*of=/dev/|wsl(\.exe)?\s+--unregister)\b", text):
         deny("comando che distrugge un filesystem o una distro.")
     if re.search(r"\bchmod\s+(-R\s+)?[0-7]*777\b", text):
         deny("chmod 777: permessi aperti a tutti, mai.")
     if re.search(r"\b(chmod|chown|chgrp)\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+|--recursive\s+)[^;|]*\s(?:~|\$HOME|/home/[\w.-]+|/)/?(?:\s|$)", text):
         deny("chmod/chown ricorsivo sulla home o sulla radice: rende inutilizzabile l'ambiente dell'utente.")
-    if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
+    if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(?:(?:sudo|doas)\s+)?(ba|z|da)?sh\b", text):
         deny("curl|sh: esecuzione di codice scaricato al volo. Scarica il file, leggilo, poi esegui.")
-    if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
+    if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(?:(?:sudo|doas)\s+)?(ba|z|da)?sh\b", text):
         deny("codice decodificato o costruito al volo e passato a sh: illeggibile per chi controlla. Scrivilo in un file, poi esegui.")
 
     # Le regole che seguono sono regex sul testo: valgono solo se il programma
@@ -1925,7 +1942,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
         check_scripts(text, config, cwd)
 
     # Privilegi: mai in silenzio
-    if any(e.con_privilegi for e in effettivi(text)):
+    if any(e.con_privilegi for e in effettivi_e_find(text)):
         ask("sudo/doas: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
 
     if (pattern := matches_any(config["ask_commands"], testo_progetto)):
