@@ -6,6 +6,9 @@
 
   "ask_mcp_servers": [],
 
+  "_prose_mcp_servers": "Il connettore Docs scrive solo documenti: un testo che parla di produzione non e' una modifica alla produzione. Il 2026-10-05 bloccava il documento sul confronto Sonnet/Opus. Gli identificativi delle sue chiamate restano controllati. Aggiunto su decisione dell'utente, il 2026-10-06.",
+  "prose_mcp_servers": ["claude_ai_Claude_Docs"],
+
   "_prod_patterns": "Vuoto di proposito: questo repo non ha ambienti. I default del hook bastano, e aggiungere qui gli host d'esempio della documentazione (db-produzione.esempio.com, appdb) renderebbe sospetto ogni comando che tocca services/ o tests/.",
   "prod_patterns": [],
 

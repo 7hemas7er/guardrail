@@ -1577,18 +1577,32 @@ def riscrivi_heredoc(text: str, da_tagliare) -> str:
         struttura.append(fuori)
         ricevente = comando_finale("".join(struttura) + m.group("prima"))
         taglia = ricevente is not None and da_tagliare(m, ricevente)
-        pezzi.append(m.group("head") + m.group("end") if taglia else m.group(0))
+        # Con il tag senza virgolette la shell esegue `$(…)` e i backtick del corpo
+        # prima di darlo a chiunque: tolto il corpo, restano le sostituzioni.
+        residuo = "" if m.group("q") else "".join(f"$({s})\n" for s in sostituzioni_di_shell(m.group("body")))
+        pezzi.append(m.group("head") + residuo + m.group("end") if taglia else m.group(0))
         struttura.append(m.group("head") + m.group("end") if ricevente is not None else m.group(0))
         pos = m.end()
     pezzi.append(text[pos:])
     return "".join(pezzi)
 
 
+def espande_sostituzioni(m: re.Match) -> bool:
+    """Tag senza virgolette e un `$` o un backtick nel corpo: la shell espande il corpo
+    prima di passarlo a chiunque, e le forme di espansione sono più di `$(…)`. Il
+    corpo allora non si toglie, resta analizzato per intero. Le sostituzioni che
+    riscrivi_heredoc estrae sono un controllo in più, non questo: se l'estrazione ne
+    perdesse una, il corpo intero la mostra comunque."""
+    corpo = m.group("body")
+    return not m.group("q") and ("$" in corpo or "`" in corpo)
+
+
 def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
     """`cat > x <<EOF`, `tee x <<EOF`, `git commit -F - <<EOF`: il corpo si archivia."""
-    if "|" in m.group("dopo"):
+    # `tee x <<'EOF' >(bash)`: tee scrive anche nella process substitution.
+    if "|" in m.group("dopo") or ">(" in m.group("dopo"):
         return False
-    if not m.group("q") and ("$(" in m.group("body") or "`" in m.group("body")):
+    if espande_sostituzioni(m):
         return False
     nome, args, uscita = ricevente
     if nome == "cat":
@@ -1645,7 +1659,10 @@ def strip_interpreter_heredocs(text: str) -> str:
 
     Per le regole built-in c'è `strip_inert_heredocs`, che taglia di meno.
     """
-    return riscrivi_heredoc(text, lambda m, ricevente: INTERPRETERS.fullmatch(ricevente[0]) is not None)
+    return riscrivi_heredoc(
+        text,
+        lambda m, ricevente: INTERPRETERS.fullmatch(ricevente[0]) is not None and not stdin_a_una_shell(m, ricevente),
+    )
 
 
 def strip_inert_heredocs(text: str) -> str:
@@ -1653,14 +1670,400 @@ def strip_inert_heredocs(text: str) -> str:
     arrivare alla shell (vedi il commento su HEREDOC)."""
 
     def inerte(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
-        corpo = m.group("body")
         return (
             INTERPRETERS_WITHOUT_SHELL.fullmatch(ricevente[0]) is not None
-            and not SPAWNS_PROCESS.search(corpo)
-            and (bool(m.group("q")) or ("$(" not in corpo and "`" not in corpo))
+            and not SPAWNS_PROCESS.search(m.group("body"))
+            and not stdin_a_una_shell(m, ricevente)
+            and not espande_sostituzioni(m)
         )
 
     return riscrivi_heredoc(text, inerte)
+
+
+# ---------------------------------------------------------------------------
+# Sostituzioni di comando (backtick, `$(…)`) e codice che lancia processi
+# ---------------------------------------------------------------------------
+
+
+def sostituzioni_di_shell(corpo: str) -> list[str]:
+    """I comandi che la shell esegue *dentro* il corpo di un heredoc con il tag senza
+    virgolette: `$(…)` e `` `…` ``. `\\$` e `` \\` `` sono escapati, le virgolette lì
+    dentro non contano. Un `$(` o un backtick che non si chiude prende il resto del
+    corpo: nel dubbio resta analizzato."""
+    trovati: list[str] = []
+    i, n = 0, len(corpo)
+    while i < n:
+        c = corpo[i]
+        if c == "\\":
+            i += 2
+        elif corpo.startswith("$(", i):
+            fine, profondita, citato = n, 1, ""
+            for j in range(i + 2, n):
+                k = corpo[j]
+                if citato:
+                    citato = "" if k == citato else citato
+                elif k in "'\"":
+                    citato = k
+                elif k == "(":
+                    profondita += 1
+                elif k == ")":
+                    profondita -= 1
+                    if profondita == 0:
+                        fine = j
+                        break
+            trovati.append(corpo[i + 2:fine])
+            i = fine + 1
+        elif c == "`":
+            j = i + 1
+            while j < n and corpo[j] != "`":
+                j += 2 if corpo[j] == "\\" else 1
+            trovati.append(re.sub(r"\\([`$\\])", r"\1", corpo[i + 1:j]))
+            i = j + 1
+        else:
+            i += 1
+    return trovati
+
+
+def _backtick_fuori(testo: str, tieni_apici: bool) -> str:
+    """`` `cmd` `` diventa `$(cmd)` fuori dalle virgolette singole e dai commenti.
+    Un backtick che non si chiude resta com'è."""
+    fuori: list[str] = []
+    i, n = 0, len(testo)
+    stato = ""
+    while i < n:
+        c = testo[i]
+        if stato == "'":
+            stato = "" if c == "'" else stato
+            fuori.append(c)
+        elif c == "\\" and i + 1 < n:
+            fuori.append(testo[i:i + 2])
+            i += 1
+        elif c == "'" and tieni_apici and stato == "":
+            stato = "'"
+            fuori.append(c)
+        elif c == '"' and tieni_apici:
+            stato = "" if stato == '"' else ('"' if stato == "" else stato)
+            fuori.append(c)
+        elif c == "#" and stato == "" and tieni_apici and (not fuori or fuori[-1] in " \t\n;&|("):
+            fine = testo.find("\n", i)
+            fine = n if fine < 0 else fine
+            fuori.append(testo[i:fine])
+            i = fine - 1
+        elif c == "`":
+            j = i + 1
+            while j < n and testo[j] != "`":
+                j += 2 if testo[j] == "\\" else 1
+            if j >= n:
+                fuori.append(testo[i:])
+                break
+            dentro = re.sub(r"\\([`$\\])", r"\1", testo[i + 1:j])
+            fuori.append("$(" + _backtick_fuori(dentro, tieni_apici) + ")")
+            i = j
+        else:
+            fuori.append(c)
+        i += 1
+    if stato == "'" and tieni_apici:
+        # Un apice che non si chiude: non si sa cosa sia citato, e si legge tutto.
+        return _backtick_fuori(testo, False)
+    return "".join(fuori)
+
+
+def _riceve_dati(m: re.Match) -> bool:
+    """Il comando del segmento che contiene `<<` archivia il corpo invece di eseguirlo:
+    `cat`, `tee`, `git`/`gh` con `-F -`. Elenco chiuso di proposito: chi non c'è (una
+    shell in una forma non prevista, un lanciatore, un comando sconosciuto) potrebbe
+    eseguire il corpo, e i suoi backtick restano comandi. Lettura grossolana, che non
+    guarda le virgolette: serve solo a decidere se i backtick di un corpo citato sono
+    testo."""
+    prima = m.string[: m.start("head")] + m.group("prima")
+    parole = [p for p in re.split(r"\$\(|[`;|&({]", prima)[-1].split() if not re.fullmatch(r"\w+=\S*", p)]
+    if not parole:
+        return False
+    nome, args = parole[0], parole[1:]
+    if nome in ("cat", "tee"):
+        return True
+    if nome in ("git", "gh"):
+        return any(
+            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
+            for i, a in enumerate(args)
+        )
+    return False
+
+
+def backtick_in_sostituzioni(text: str) -> str:
+    """Un comando dentro `` `…` `` lo esegue la shell come dentro `$(…)`, e le regole
+    sanno leggere solo `$(…)`: si riscrive. I corpi degli heredoc ancora presenti
+    (quelli che nessuno ha archiviato) si convertono senza guardare le virgolette:
+    sono testo di un altro linguaggio, e un apostrofo non deve nascondere un comando."""
+    if "`" not in text:
+        return text
+    pezzi: list[str] = []
+    pos = 0
+    for m in HEREDOC.finditer(text):
+        pezzi.append(_backtick_fuori(text[pos:m.start("body")], True))
+        # Tag fra virgolette: la shell non espande niente. I backtick del corpo sono
+        # testo solo se lo riceve un comando che archivia (`cat`, anche dentro
+        # `"$(cat <<'EOF' …)"`); per chiunque altro restano comandi.
+        if m.group("q") and _riceve_dati(m):
+            pezzi.append(m.group("body"))
+        else:
+            pezzi.append(_backtick_fuori(m.group("body"), False))
+        pos = m.end("body")
+    pezzi.append(_backtick_fuori(text[pos:], True))
+    return "".join(pezzi)
+
+
+# Lo stdin letto dal codice passato a `python3 -c` / `node -e`.
+STDIN_LETTO = re.compile(
+    r"\binput\s*\(|stdin|readFileSync\s*\(\s*0\b|/dev/stdin|\bopen\s*\(\s*0\b|readline|fileinput|\bfd\s*=\s*0\b"
+)
+
+
+# Il codice di `-c`/`-e` non si legge dagli argomenti di `comando_finale`: lì la
+# punteggiatura citata è mascherata. Se c'è un flag ma il testo non si trova, si
+# suppone il peggio: legge lo stdin e lancia processi.
+CODICE_IGNOTO = "input(stdin) system("
+
+
+def _codice_inline(m: re.Match, args: list[str]) -> str | None:
+    """Il codice passato con `-c`/`-e` all'interprete che riceve l'heredoc `m`; None
+    se l'interprete legge un programma dallo stdin (`python3 -`, `node`)."""
+    if not any(CODE_FLAG.fullmatch(a) for a in args):
+        return None
+    prima = m.string[: m.start("head")] + m.group("prima")
+    trovati = list(INLINE_CODE.finditer(prima))
+    if trovati and not prima[trovati[-1].end():].strip():
+        return trovati[-1].group("code")[1:-1]
+    return CODICE_IGNOTO
+
+
+def stdin_a_una_shell(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
+    """`python3 -c 'os.system(input())' <<EOF`: il codice legge lo stdin e lancia
+    processi, quindi il corpo dell'heredoc può essere un comando di shell. Resta
+    analizzato dalle regole della shell, tutto: non si indovina quale dei due sia."""
+    nome, args, _ = ricevente
+    if INTERPRETERS_WITHOUT_SHELL.fullmatch(nome) is None:
+        return False
+    codice = _codice_inline(m, args)
+    return codice is not None and STDIN_LETTO.search(codice) is not None and SPAWNS_PROCESS.search(codice) is not None
+
+
+# --- stringhe che il codice passa a un lanciatore di processi ---------------
+
+_PY_SEMPRE_SHELL = r"system|popen|getoutput|getstatusoutput|create_subprocess_shell"
+_PY_CON_SHELL = r"run|call|check_call|check_output|Popen"
+_JS_SEMPRE_SHELL = r"exec|execSync"
+_JS_CON_SHELL = r"spawn|spawnSync|execFile|execFileSync"
+_CHIAMATE = {
+    False: re.compile(
+        rf"(?P<n>{_PY_SEMPRE_SHELL}|{_PY_CON_SHELL}|eval|exec)\s*\("
+    ),
+    True: re.compile(
+        rf"(?P<n>{_JS_SEMPRE_SHELL}|{_JS_CON_SHELL}|eval)\s*\("
+    ),
+}
+_SEMPRE_SHELL = {
+    False: frozenset(_PY_SEMPRE_SHELL.split("|")),
+    True: frozenset(_JS_SEMPRE_SHELL.split("|")),
+}
+_SHELL_ACCESA = re.compile(r"\bshell\s*[=:]\s*(?!False\b|false\b|0\b|None\b|null\b|undefined\b)")
+_PREFISSO_STRINGA = re.compile(r"[rRbBfFuU]{1,2}(?=['\"])")
+_DINAMICO = "$DINAMICO"
+
+
+class _Illeggibile(Exception):
+    pass
+
+
+def _fine_stringa(src: str, i: int, js: bool) -> int:
+    """Indice subito dopo la stringa che comincia in `i` (dov'è la virgoletta)."""
+    q = src[i]
+    triplo = not js and src.startswith(q * 3, i)
+    j = i + (3 if triplo else 1)
+    n = len(src)
+    while j < n:
+        c = src[j]
+        if c == "\\":
+            j += 2
+        elif triplo and src.startswith(q * 3, j):
+            return j + 3
+        elif not triplo and c == q:
+            return j + 1
+        elif not triplo and c == "\n" and not (js and q == "`"):
+            raise _Illeggibile
+        else:
+            j += 1
+    raise _Illeggibile
+
+
+def _fine_chiamata(src: str, i: int, js: bool) -> int:
+    """Indice della parentesi che chiude la chiamata aperta subito prima di `i`."""
+    profondita, n = 1, len(src)
+    while i < n:
+        c = src[i]
+        if c in "'\"" or (js and c == "`"):
+            i = _fine_stringa(src, i, js)
+            continue
+        if c in "([{":
+            profondita += 1
+        elif c in ")]}":
+            profondita -= 1
+            if profondita == 0:
+                return i
+        i += 1
+    raise _Illeggibile
+
+
+def _decodifica(src: str, js: bool, prefisso: str, grezzo: str) -> str:
+    if js:
+        return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "r": "\r"}.get(m.group(1), m.group(1)), grezzo)
+    if "f" in prefisso.lower():
+        return re.sub(r"\{[^{}]*\}", _DINAMICO, grezzo.replace("{{", "{").replace("}}", "}"))
+    try:
+        import ast
+
+        valore = ast.literal_eval(prefisso + src)
+        return valore if isinstance(valore, str) else grezzo
+    except (ValueError, SyntaxError):
+        return grezzo
+
+
+def _primo_argomento(args: str, js: bool) -> str | None:
+    """Il primo argomento di una chiamata come testo di shell, se contiene letterali:
+    `'rm -rf ' + d` diventa `rm -rf $DINAMICO`, perché ciò che non si legge è una
+    variabile, e una variabile in un comando distruttivo è vietata. None se non c'è
+    nessun letterale (`os.system(cmd)`): lì non si sa niente."""
+    parti: list[str] = []
+    letterale = False
+    i, n = 0, len(args)
+    try:
+        while i < n:
+            c = args[i]
+            if c in " \t\r\n+":
+                i += 1
+                continue
+            if c == ",":
+                break
+            m = None if js else _PREFISSO_STRINGA.match(args, i)
+            inizio = i + (m.end() - m.start() if m else 0)
+            if args[inizio:inizio + 1] in ("'", '"') or (js and c == "`"):
+                fine = _fine_stringa(args, inizio, js)
+                triplo = not js and args.startswith(args[inizio] * 3, inizio)
+                lung = 3 if triplo else 1
+                grezzo = args[inizio + lung:fine - lung]
+                testo = _decodifica(args[inizio:fine], js, m.group(0) if m else "", grezzo)
+                # `"rm -rf %s" % d`, `"rm -rf {}".format(d)`: il segnaposto è una variabile.
+                resto = args[fine:].lstrip()
+                if not js and (resto.startswith("%") or resto.startswith(".format")):
+                    testo = re.sub(r"%[sdr]|\{[^{}]*\}", _DINAMICO, testo)
+                parti.append(testo)
+                letterale = True
+                i = fine
+                continue
+            # Un'espressione che non è un letterale: si salta fino al `+` o alla `,` successivi.
+            profondita = 0
+            while i < n:
+                k = args[i]
+                if k in "'\"" or (js and k == "`"):
+                    i = _fine_stringa(args, i, js)
+                    continue
+                if k in "([{":
+                    profondita += 1
+                elif k in ")]}":
+                    profondita -= 1
+                elif profondita <= 0 and k in ",+":
+                    break
+                i += 1
+            parti.append(_DINAMICO)
+    except _Illeggibile:
+        return "".join(parti) if letterale else None
+    return "".join(parti) if letterale else None
+
+
+def comandi_lanciati(src: str, js: bool, profondita: int = 0, crudo: bool = False) -> list[str]:
+    """Le stringhe che il codice `src` (Python se `js` è falso, JavaScript se vero)
+    passa a una chiamata che le esegue come comando di shell: `os.system`,
+    `os.popen`, `subprocess.*(…, shell=True)`, `child_process.exec`/`execSync`, e
+    anche `eval`/`exec` di un letterale, che sono codice a loro volta. Una lista
+    di argomenti senza shell (`subprocess.run(['git', 'status'])`) non lancia
+    una shell e non conta. Commenti e stringhe che nessuno passa non contano.
+
+    Se la lettura si incrocia (una stringa che non si chiude), si rilegge il testo
+    *senza* saltare commenti e stringhe: più falsi allarmi, mai un varco."""
+    trovate: list[str] = []
+    if profondita > MAX_DEPTH:
+        return trovate
+    chiamata = _CHIAMATE[js]
+    i, n = 0, len(src)
+    try:
+        while i < n:
+            c = src[i]
+            if not crudo:
+                if (c == "#" and not js) or (js and src.startswith("//", i)):
+                    j = src.find("\n", i)
+                    i = n if j < 0 else j
+                    continue
+                if js and src.startswith("/*", i):
+                    j = src.find("*/", i + 2)
+                    i = n if j < 0 else j + 2
+                    continue
+                if c in "'\"" or (js and c == "`"):
+                    fine = _fine_stringa(src, i, js)
+                    if js and c == "`":
+                        for e in re.finditer(r"\$\{([^{}]*)\}", src[i:fine]):
+                            trovate += comandi_lanciati(e.group(1), js, profondita + 1, crudo)
+                    i = fine
+                    continue
+            m = chiamata.match(src, i) if (c.isalpha() or c in "_$") and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] in "_$")) else None
+            if not m:
+                i += 1
+                continue
+            fine = _fine_chiamata(src, m.end(), js)
+            args = src[m.end():fine]
+            nome = m.group("n")
+            if nome == "eval" or (nome == "exec" and not js):
+                letterale = _primo_argomento(args, js)
+                if letterale is not None:
+                    trovate += comandi_lanciati(letterale, js, profondita + 1, crudo)
+            elif nome in _SEMPRE_SHELL[js] or _SHELL_ACCESA.search(args):
+                comando = _primo_argomento(args, js)
+                if comando is not None and comando.strip():
+                    trovate.append(comando)
+            i = m.end()
+    except _Illeggibile:
+        return comandi_lanciati(src, js, profondita, True) if not crudo else trovate
+    return trovate
+
+
+def check_codice_negli_heredoc(text: str, config: dict, cwd: str, depth: int) -> None:
+    """Un heredoc Python o Node che passa una stringa letterale a `os.system`,
+    `subprocess.*(…, shell=True)`, `child_process.exec`: quella stringa è un comando
+    di shell, e si giudica con gli stessi controlli di un comando Bash. Vale anche
+    se il programma arriva dallo stdin di `python3 -c 'exec(input())'`. Con il tetto
+    di profondità di `check_inline_shell`."""
+    if depth >= MAX_DEPTH or "<<" not in text:
+        return
+
+    def guarda(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
+        nome, args, _ = ricevente
+        js = nome == "node"
+        if not (js or re.fullmatch(r"python[\d.]*", nome)):
+            return False
+        codice = _codice_inline(m, args)
+        # Con `-c`/`-e` il corpo è il programma solo se il codice lo legge dallo stdin.
+        if codice is not None and not STDIN_LETTO.search(codice):
+            return False
+        for comando in comandi_lanciati(m.group("body"), js):
+            try:
+                check_bash(comando, config, cwd, depth + 1)
+            except Decision as trovato:
+                raise Decision(
+                    trovato.verdict,
+                    f"dentro un comando che il codice passa alla shell ({comando[:70]!r}): {trovato.reason}",
+                ) from None
+        return False
+
+    riscrivi_heredoc(text, guarda)
 
 
 def solo_sintassi(nome: str, flags: list[str]) -> bool:
@@ -1854,11 +2257,12 @@ def check_inline_shell(text: str, config: dict, cwd: str, depth: int) -> None:
 
 def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+    check_codice_negli_heredoc(text, config, cwd, depth)
     # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
     # un interprete: là dentro un path è citato, non eseguito. Le regole built-in
     # li perdono solo se quel codice non può arrivare alla shell.
     testo_progetto = strip_interpreter_heredocs(text)
-    text = strip_inert_heredocs(text)
+    text = backtick_in_sostituzioni(strip_inert_heredocs(text))
 
     if depth == 0 and matches_any(config["allow_commands"], testo_progetto):
         return
@@ -2436,7 +2840,7 @@ def _check_write_guardrail(path: Path) -> None:
 def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
     """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
     .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
-    text = strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd)))
+    text = backtick_in_sostituzioni(strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd))))
     check_protected_writes(text, cwd)
     if depth >= MAX_DEPTH:
         return
