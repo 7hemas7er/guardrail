@@ -406,3 +406,13 @@
 {"name": "argomento in plugins/data con .. verso il codice dei plugin: resta una modifica", "tool_name": "Bash", "tool_input": {"command": "node s.js ~/.claude/plugins/data/../cache/m/p/1.0/hooks/guard.py"}, "expect": "deny"}
 {"name": "argomento che contiene plugins/data ma porta altrove: resta una modifica", "tool_name": "Bash", "tool_input": {"command": "node s.js /tmp/.claude/plugins/data/x/../../hooks/guard.py"}, "expect": "deny"}
 {"name": "node -e con un path in plugins/data e uno nel codice dei plugin: niente esenzione", "tool_name": "Bash", "tool_input": {"command": "node -e 'require(\"fs\").writeFileSync(process.argv[1], \"\")' ~/.claude/plugins/data/p/x ~/.claude/plugins/cache/m/hooks/guard.py"}, "expect": "deny"}
+{"name": "codice inline citato: un python3 -c dentro gli argomenti di tee non fa sparire la scrittura su .guardrail.json", "tool_name": "Bash", "tool_input": {"command": "tee \"(python3 -c 'x')\" .guardrail.json <<'EOF'\n{}\nEOF"}, "expect": "ask"}
+{"name": "parentesi fra virgolette non spezza il comando: la scrittura su .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "cp \"(x)\" .guardrail.json"}, "expect": "ask"}
+{"name": "pipe fra virgolette non spezza il comando: tee su .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "tee \"a|b\" .guardrail.json <<'EOF'\n{}\nEOF"}, "expect": "ask"}
+{"name": "punto e virgola fra virgolette non spezza il comando: tee su .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "tee \"; x\" .guardrail.json <<'EOF'\n{}\nEOF"}, "expect": "ask"}
+{"name": "punto e virgola fra virgolette non spezza rm: la rimozione di .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "rm -f \"a;b\" .guardrail.json"}, "expect": "deny"}
+{"name": "$( ) fra virgolette nel primo argomento di tee: la scrittura su .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "tee \"$(echo x)\" .guardrail.json < /dev/null"}, "expect": "ask"}
+{"name": "& fra apici non spezza cp: la scrittura sulle settings resta", "tool_name": "Bash", "tool_input": {"command": "cp 'a & b' .claude/settings.json"}, "expect": "ask"}
+{"name": "; nell'espressione di sed -i: la modifica di .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "sed -i \"s/a;b/c/\" .guardrail.json"}, "expect": "ask"}
+{"name": "tee citato nel pattern di grep su .guardrail.json: è una lettura", "tool_name": "Bash", "tool_input": {"command": "grep \"; tee\" .guardrail.json"}, "expect": "allow"}
+{"name": "cp e tee citati in una stringa di echo: nessuna scrittura", "tool_name": "Bash", "tool_input": {"command": "echo \"cp (x) e tee; .guardrail.json sono esempi\""}, "expect": "allow"}

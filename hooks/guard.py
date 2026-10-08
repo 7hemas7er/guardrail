@@ -518,9 +518,9 @@ CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
 SHELL_PUNCTUATION = frozenset("();<>|&")
 
 
-def ultimo_segmento(testo: str) -> str | None:
-    """Il testo dopo l'ultimo separatore *vero*: `;`, `|`, `&`, `(`, `)` o a capo
-    fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
+def segmenti_veri(testo: str) -> list[str] | None:
+    """I segmenti di `testo` divisi dai separatori *veri*: `;`, `|`, `&`, `(`, `)` o a
+    capo fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
     escapata (`";"`, `\\>`) diventa `_`, perché nessuno la scambi dopo per un
     operatore: shlex in modo posix toglie le virgolette, e `";"` tornerebbe `;`.
 
@@ -528,8 +528,9 @@ def ultimo_segmento(testo: str) -> str | None:
     compreso: `bash -s \\` a capo `python3` è un comando solo, bash. Un `#` a
     inizio parola apre un commento fino a capo, e lì niente è un operatore.
     None se `testo` finisce dentro una stringa, un escape o un commento: chi
-    chiede del comando finale di una riga che non si chiude non sa niente.
+    chiede dei comandi di una riga che non si chiude non sa niente.
     """
+    segmenti: list[str] = []
     corrente: list[str] = []
     stato = ""  # "" fuori, "'" o '"' dentro una stringa, "#" in un commento
     i, n = 0, len(testo)
@@ -537,6 +538,7 @@ def ultimo_segmento(testo: str) -> str | None:
         c = testo[i]
         if stato == "#":
             if c == "\n":
+                segmenti.append("".join(corrente))
                 stato, corrente = "", []
             i += 1
             continue
@@ -564,13 +566,20 @@ def ultimo_segmento(testo: str) -> str | None:
         elif c == "#" and (not corrente or corrente[-1] in " \t"):
             stato = "#"
         elif c in ";|&()\n":
+            segmenti.append("".join(corrente))
             corrente = []
         else:
             corrente.append(c)
         i += 1
     if stato:
         return None
-    return "".join(corrente)
+    return segmenti + ["".join(corrente)]
+
+
+def ultimo_segmento(testo: str) -> str | None:
+    """Il testo dopo l'ultimo separatore vero (vedi segmenti_veri)."""
+    segmenti = segmenti_veri(testo)
+    return None if segmenti is None else segmenti[-1]
 
 
 def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
@@ -911,8 +920,16 @@ def giudica_codice_inline(text: str) -> str:
 
 
 def check_protected_writes(text: str, cwd: str = "") -> None:
+    """Scritture e rimozioni dei file che governano guardrail e Claude Code.
+
+    I segmenti sono due serie. Prima quelli di shell_segments, che taglia a ogni `;`,
+    `|` o `)` anche fra virgolette. Poi quelli che vede la shell (segmenti_veri): in
+    `tee "; x" .guardrail.json` il taglio cieco lascia `x" .guardrail.json`, senza
+    comando, e la scrittura di tee sparisce. Una serie in più può solo aggiungere
+    conferme e blocchi, mai toglierne.
+    """
     text = giudica_codice_inline(text)
-    for segment in shell_segments(text):
+    for segment in shell_segments(text) + (segmenti_veri(text) or []):
         tolto = None
         for raw in removed_paths(segment):
             if operando_vuoto(raw):
