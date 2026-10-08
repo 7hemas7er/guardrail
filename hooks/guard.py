@@ -36,7 +36,9 @@ Solo libreria standard. Nessuna dipendenza, nessuna rete.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -45,6 +47,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import mask  # hooks/mask.py: mascheramento dei termini riservati, attivo solo con la mappa
 
@@ -323,19 +326,583 @@ def matches_any(patterns: list[str], text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Bash: il comando vero
+# ---------------------------------------------------------------------------
+#
+# Ogni controllo che chiede «questo comando è rm? è find? è uno script?» deve
+# chiederlo qui. Prima ognuno aveva la sua regex e la sua lista di prefissi
+# (`command`, `env`, `nohup`, `FOO=1`…), e ogni prefisso dimenticato era un buco:
+# la forma nuda era bloccata, la stessa con `nice`, `then`, `/bin/` o `\` davanti
+# passava. Due pezzi, e nient'altro:
+#
+#   comandi(testo)           spezza il testo in comandi come lo fa la shell
+#   comando_effettivo(parole)  salta ciò che sta davanti al comando vero
+
+MAX_ANNIDAMENTO = 12
+# Quanti caratteri, in tutto, si rileggono cercando dove si chiude una `(`, una `"` o
+# un backtick, per carattere del testo. Un comando vero ne spende pochi (uno per
+# livello di annidamento); `$( ` ripetuto e mai chiuso li rilegge ogni volta fino in
+# fondo, ed è quadratico.
+SPESA_PER_CARATTERE = 40
+_spesa = [0, 0]  # [spesa fin qui, tetto] del testo che `comandi` sta leggendo
+
+
+class Comando(NamedTuple):
+    """Un comando semplice, letto con le virgolette."""
+
+    parole: tuple[str, ...]  # nome e argomenti, senza virgolette né backslash, senza redirezioni
+    uscite: tuple[str, ...]  # bersagli di `>`, `>>`, `&>`, `>|`
+    entrate: tuple[str, ...]  # bersagli di `<`
+    testo: str  # com'era scritto, per le regole che guardano il testo
+
+
+# Un pezzo di parola senza niente di speciale: si consuma in un colpo solo.
+CORRENTE = re.compile(r"[^\s'\"\\$`;&|()<>#]+")
+REDIREZIONE = re.compile(r"&>>?|<<<|<<-?|<>|>>|>\||[<>]&?")
+# `2>&1`, `>&-`: duplica un descrittore, non scrive su un file.
+FD_DUPLICATO = re.compile(r"\d+-?|-")
+
+
+def _addebita(da: int, a: int) -> None:
+    _spesa[0] += a - da
+    if _spesa[0] > _spesa[1]:
+        deny(
+            "comando troppo intricato per essere controllato: virgolette, backtick o `$(` aperti e mai chiusi. "
+            "Riscrivilo in più comandi semplici. (guardrail: filesystem-shell-segreti.md)"
+        )
+
+
+def _fine_backtick(testo: str, i: int) -> int:
+    """L'indice del backtick che chiude quello in `i`, o -1."""
+    j, n = i + 1, len(testo)
+    while j < n:
+        if testo[j] == "\\":
+            j += 2
+        elif testo[j] == "`":
+            break
+        else:
+            j += 1
+    else:
+        j = -1
+    _addebita(i, n if j < 0 else j)
+    return j
+
+
+def _fine_virgolette(testo: str, i: int, prof: int) -> int:
+    """L'indice della `"` che chiude quella in `i`, o -1. Dentro le virgolette
+    doppie `$(…)` e i backtick contano: la shell li esegue."""
+    if prof > MAX_ANNIDAMENTO:
+        _troppo_annidato()
+    j, n = i + 1, len(testo)
+    while j < n:
+        c = testo[j]
+        if c == "\\":
+            j += 2
+        elif c == '"':
+            _addebita(i, j)
+            return j
+        elif testo.startswith("$(", j):
+            k = _chiudi_parentesi(testo, j + 2, prof + 1)
+            j = k + 1 if k >= 0 else j + 2
+        elif c == "`":
+            k = _fine_backtick(testo, j)
+            j = k + 1 if k >= 0 else j + 1
+        else:
+            j += 1
+    _addebita(i, n)
+    return -1
+
+
+def _chiudi_parentesi(testo: str, i: int, prof: int) -> int:
+    """L'indice della `)` che chiude la `(` aperta subito prima di `i`, o -1."""
+    if prof > MAX_ANNIDAMENTO:
+        _troppo_annidato()
+    profondita, n, inizio = 1, len(testo), i
+    while i < n:
+        c = testo[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            j = testo.find("'", i + 1)
+            i = j + 1 if j >= 0 else i + 1
+            continue
+        if c == '"':
+            j = _fine_virgolette(testo, i, prof)
+            i = j + 1 if j >= 0 else i + 1
+            continue
+        if c == "`":
+            j = _fine_backtick(testo, i)
+            i = j + 1 if j >= 0 else i + 1
+            continue
+        if c == "(":
+            profondita += 1
+        elif c == ")":
+            profondita -= 1
+            if profondita == 0:
+                _addebita(inizio, i)
+                return i
+        i += 1
+    _addebita(inizio, n)
+    return -1
+
+
+def _fine_graffe(testo: str, i: int) -> int:
+    """L'indice della `}` che chiude la `${` che comincia in `i`, o -1. Si legge come
+    la shell: `${a:-${b}}` annida, `${a:-"x}"}` e `${a:-'}'}` hanno la `}` fra virgolette,
+    `\\}` è escapata, e `$(…)` e i backtick dentro hanno le loro."""
+    j, n, profondita = i + 2, len(testo), 1
+    while j < n:
+        c = testo[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = testo.find("'", j + 1)
+            if k < 0:
+                break
+            j = k + 1
+            continue
+        if c == '"':
+            k = _fine_virgolette(testo, j, 1)
+            if k < 0:
+                break
+            j = k + 1
+            continue
+        if c == "`":
+            k = _fine_backtick(testo, j)
+            if k < 0:
+                break
+            j = k + 1
+            continue
+        if testo.startswith("$(", j):
+            k = _chiudi_parentesi(testo, j + 2, 1)
+            if k < 0:
+                break
+            j = k + 1
+            continue
+        if testo.startswith("${", j):
+            profondita += 1
+            j += 2
+            continue
+        if c == "}":
+            profondita -= 1
+            if profondita == 0:
+                _addebita(i, j)
+                return j
+        j += 1
+    _addebita(i, n)
+    return -1
+
+
+def _troppo_annidato() -> None:
+    # Un bug del guard lascia passare il tool: un annidamento che non si sa leggere
+    # non può diventare un errore interno, o basterebbe annidare per saltare tutto.
+    deny(
+        "comando annidato troppo a fondo ($(…), virgolette e backtick uno dentro l'altro) per essere "
+        "controllato. Spezzalo in più comandi. (guardrail: filesystem-shell-segreti.md)"
+    )
+
+
+def _senza_escape(dentro_virgolette: str) -> str:
+    """Il testo fra virgolette doppie com'è per la shell: `\\"`, `\\$`, `\\\\` e `\\``
+    perdono il backslash, a capo escapato sparisce, ogni altro `\\x` resta."""
+    return re.sub(r"\\([$`\"\\\n])", lambda m: "" if m.group(1) == "\n" else m.group(1), dentro_virgolette)
+
+
+def _sostituzioni(frammento: str, prof: int) -> list[Comando]:
+    """I comandi dentro `$(…)` e backtick di un frammento fra virgolette doppie o `${…}`."""
+    trovati: list[Comando] = []
+    i, n = 0, len(frammento)
+    while i < n:
+        if frammento[i] == "\\":
+            i += 2
+        elif frammento.startswith("$(", i):
+            k = _chiudi_parentesi(frammento, i + 2, prof + 1)
+            if k >= 0:
+                trovati.extend(_leggi(frammento[i + 2:k], prof + 1))
+            i = k + 1 if k >= 0 else i + 2
+        elif frammento[i] == "`":
+            k = _fine_backtick(frammento, i)
+            if k >= 0:
+                trovati.extend(_leggi(frammento[i + 1:k].replace("\\`", "`"), prof + 1))
+            i = k + 1 if k >= 0 else i + 1
+        else:
+            i += 1
+    return trovati
+
+
+class _Lettore:
+    """Spezza un testo in comandi. Separatori: `;`, `&`, `|`, `(`, `)`, a capo, fuori
+    da virgolette, escape e commenti. Le virgolette spaiate valgono come carattere
+    qualunque: la shell darebbe errore, e il guard preferisce vedere un comando in
+    più che perderlo dietro un apostrofo."""
+
+    def __init__(self, testo: str, prof: int) -> None:
+        if prof > MAX_ANNIDAMENTO:
+            _troppo_annidato()
+        self.testo, self.prof = testo, prof
+        self.citata = False  # la parola in corso ha almeno un pezzo fra virgolette o escapato
+        self.trovati: list[Comando] = []
+        self.parole: list[str] = []
+        self.uscite: list[str] = []
+        self.entrate: list[str] = []
+        self.pezzi: list[str] = []
+        self.in_parola = False
+        self.attesa: str | None = None  # la redirezione che aspetta il suo bersaglio
+        self.heredoc: list[tuple[str, bool]] = []  # (tag, fra virgolette) degli heredoc aperti sulla riga
+        self.inizio = 0
+        self.riga_da = 0  # quanti comandi erano già in `trovati` quando la riga è cominciata
+
+    def aggiungi(self, pezzo: str, citato: bool = False) -> None:
+        self.pezzi.append(pezzo)
+        self.in_parola = True
+        self.citata = self.citata or citato
+
+    def chiudi_parola(self) -> None:
+        if not self.in_parola:
+            return
+        parola = "".join(self.pezzi)
+        citata, self.citata = self.citata, False
+        self.pezzi.clear()
+        self.in_parola = False
+        operatore, self.attesa = self.attesa, None
+        if operatore is None:
+            self.parole.append(parola)
+        elif ">" in operatore:
+            if not (operatore.endswith("&") and FD_DUPLICATO.fullmatch(parola)):
+                self.uscite.append(parola)
+        elif operatore == "<":
+            self.entrate.append(parola)
+        elif operatore in ("<<", "<<-"):
+            self.heredoc.append((parola, citata))
+        # `<<<` e `<&`: una stringa o un descrittore, non un file
+
+    def chiudi_comando(self, fine: int) -> None:
+        self.chiudi_parola()
+        if self.parole or self.uscite or self.entrate:
+            self.trovati.append(
+                Comando(tuple(self.parole), tuple(self.uscite), tuple(self.entrate), self.testo[self.inizio:fine].strip())
+            )
+        self.parole, self.uscite, self.entrate = [], [], []
+        self.attesa = None
+        self.inizio = fine + 1
+
+    def corpi_heredoc(self, pos: int, di_dati: bool) -> int:
+        """Il corpo degli heredoc aperti sulla riga che finisce, da `pos` fino al tag.
+        Ogni riga si legge da sola, senza il contesto di virgolette delle altre: il
+        corpo non è sintassi di shell (un `'` in un testo non apre niente), ma può
+        essere codice che una shell riceve, e una riga che comincia con `rm` va vista."""
+        t = self.testo
+        for tag, citato in self.heredoc:
+            # Con il tag fra virgolette la shell non espande il corpo, ma chi lo riceve
+            # può eseguirlo. È testo solo se lo riceve un comando che archivia dati
+            # (`riceve_dati`); per chiunque altro il corpo resta analizzato.
+            letterale = citato and di_dati
+            while pos < len(t):
+                fine = t.find("\n", pos)
+                fine = len(t) if fine < 0 else fine
+                riga, pos = t[pos:fine], fine + 1
+                if riga.strip() == tag:
+                    break
+                if not letterale:
+                    self.trovati.extend(_leggi(riga, self.prof))
+                elif riga.split():
+                    # Testo: niente separatori né sostituzioni (le `(` e i `;` di una frase
+                    # non aprono comandi), ma una riga che *comincia* con un comando si vede.
+                    self.trovati.append(Comando(tuple(riga.split()), (), (), riga.strip()))
+        self.heredoc.clear()
+        return min(pos, len(t))
+
+    def sostituzione(self, i: int, apre: int) -> int:
+        """`$(…)`, `<(…)`, `>(…)` che comincia in `i`: la parola lo contiene, i suoi
+        comandi si leggono a parte. Il nuovo indice, o -1 se non si chiude."""
+        k = _chiudi_parentesi(self.testo, i + apre, self.prof + 1)
+        if k < 0:
+            return -1
+        self.aggiungi(self.testo[i:k + 1])
+        self.trovati.extend(_leggi(self.testo[i + apre:k], self.prof + 1))
+        return k + 1
+
+    def dollaro(self, i: int) -> int:
+        t = self.testo
+        if t.startswith("$(", i):
+            if (k := self.sostituzione(i, 2)) >= 0:
+                return k
+        elif t.startswith("${", i) and (k := _fine_graffe(t, i)) >= 0:
+            self.aggiungi(t[i:k + 1])
+            self.trovati.extend(_sostituzioni(t[i + 2:k], self.prof))
+            return k + 1
+        self.aggiungi("$")
+        return i + 1
+
+    def redirezione(self, i: int) -> int:
+        """`<`, `>`, `&` fuori dalle virgolette: una redirezione, una process
+        substitution o, per `&` da solo, un separatore."""
+        t = self.testo
+        if t[i] in "<>" and t.startswith("(", i + 1) and (k := self.sostituzione(i, 2)) >= 0:
+            return k
+        m = REDIREZIONE.match(t, i)
+        if m is None:
+            self.chiudi_comando(i)
+            return i + 1
+        if self.in_parola and "".join(self.pezzi).isdigit():
+            self.pezzi.clear()  # `2>`: il descrittore, non un argomento
+            self.in_parola = False
+        else:
+            self.chiudi_parola()
+        self.attesa = m.group()
+        return m.end()
+
+    def esegui(self) -> list[Comando]:
+        t, n = self.testo, len(self.testo)
+        i = 0
+        while i < n:
+            c = t[i]
+            if (m := CORRENTE.match(t, i)) is not None:
+                self.aggiungi(m.group())
+                i = m.end()
+            elif c in " \t":
+                self.chiudi_parola()
+                i += 1
+            elif c == "\n":
+                self.chiudi_parola()
+                # Un solo comando sulla riga, e che archivia dati: con `;`, `|` o `&&` il
+                # corpo potrebbe andare a un altro, e allora resta analizzato.
+                di_dati = (
+                    bool(self.heredoc) and len(self.trovati) == self.riga_da and riceve_dati(comando_effettivo(self.parole))
+                )
+                self.chiudi_comando(i)
+                i += 1
+                if self.heredoc:
+                    i = self.corpi_heredoc(i, di_dati)
+                    self.inizio = i
+                self.riga_da = len(self.trovati)
+            elif c == "\\":
+                if i + 1 < n and t[i + 1] != "\n":
+                    self.aggiungi(t[i + 1], True)
+                i += 2
+            elif c == "'":
+                j = t.find("'", i + 1)
+                if j < 0:
+                    self.aggiungi(c)
+                    i += 1
+                else:
+                    self.aggiungi(t[i + 1:j], True)
+                    i = j + 1
+            elif c == '"':
+                j = _fine_virgolette(t, i, self.prof)
+                if j < 0:
+                    self.aggiungi(c)
+                    i += 1
+                else:
+                    self.aggiungi(_senza_escape(t[i + 1:j]), True)
+                    self.trovati.extend(_sostituzioni(t[i + 1:j], self.prof))
+                    i = j + 1
+            elif c == "$":
+                i = self.dollaro(i)
+            elif c == "`":
+                j = _fine_backtick(t, i)
+                if j < 0:
+                    self.aggiungi(c)
+                    i += 1
+                else:
+                    self.aggiungi(t[i:j + 1])
+                    self.trovati.extend(_leggi(t[i + 1:j].replace("\\`", "`"), self.prof + 1))
+                    i = j + 1
+            elif c == "#":
+                if self.in_parola:  # `$#`, `a#b`
+                    self.aggiungi(c)
+                    i += 1
+                else:
+                    j = t.find("\n", i)
+                    i = n if j < 0 else j
+            elif c in "<>&":
+                i = self.redirezione(i)
+            else:  # ; | ( )
+                self.chiudi_comando(i)
+                i += 1
+        self.chiudi_comando(n)
+        return self.trovati
+
+
+def _leggi(testo: str, prof: int) -> list[Comando]:
+    return _Lettore(testo, prof).esegui()
+
+
+def riceve_dati(comando: Effettivo) -> bool:
+    """Il comando archivia il corpo di un heredoc invece di eseguirlo: `cat`, `tee`,
+    `git`/`gh` con `-F -`. Elenco chiuso di proposito: chi non c'è (una shell, ssh,
+    un interprete, un comando sconosciuto) potrebbe eseguirlo, e il corpo resta
+    analizzato. L'elenco inverso, quello delle shell, lasciava passare chi mancava."""
+    if comando.lanciatori:
+        return False
+    if comando.nome in ("cat", "tee"):
+        return True
+    if comando.nome in ("git", "gh"):
+        args = comando.args
+        return git_legge_stdin(args)
+    return False
+
+
+@functools.lru_cache(maxsize=64)
+def comandi(testo: str) -> tuple[Comando, ...]:
+    """I comandi che `testo` contiene, anche dentro `$(…)`, backtick e process
+    substitution. Un testo che si limita a *citare* un comando (`grep "rm -rf" f`,
+    `echo 'f() { rm -rf "$1"; }'`) ne ha uno solo: grep, echo."""
+    _spesa[:] = [0, SPESA_PER_CARATTERE * len(testo) + 10_000]
+    return tuple(_leggi(testo, 0))
+
+
+# Parole chiave dopo le quali comincia un comando: `then rm`, `do rm`, `{ rm`, `! rm`.
+PAROLE_CHIAVE = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{", "}"})
+# `FOO=1`, `PATH+=:x`, `a[1]=x`: il valore è già senza virgolette.
+ASSEGNAMENTO = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
+
+
+class Lanciatore(NamedTuple):
+    valori: frozenset[str] = frozenset()  # opzioni che si portano dietro un valore (non è il comando)
+    posizionali: int = 0  # argomenti fissi prima del comando: la durata di timeout, il file di flock
+    stringa: frozenset[str] = frozenset()  # opzioni il cui valore è una riga di comando (env -S)
+
+
+# Comandi che si limitano a lanciare il comando che li segue: davanti a rm non
+# cambiano cosa si cancella. `command rm -rf "${D}"` è la forma di nvm.sh. Le
+# opzioni sono quelle di ciascuno, non un insieme comune: `sudo -n` non ha valore e
+# `nice -n` sì, e con un solo insieme `sudo -n rm .guardrail.json` prenderebbe rm
+# per il valore di -n. È una lista, e una lista ha sempre un buco: copre le forme
+# che si scrivono davvero. Un lanciatore che manca qui, davanti a rm, lo nasconde.
+LANCIATORI: dict[str, Lanciatore] = {
+    "sudo": Lanciatore(frozenset({"-u", "-g", "-U", "-C", "-D", "-R", "-T", "-p", "-r", "-t", "--user", "--group", "--chdir", "--prompt"})),
+    "doas": Lanciatore(frozenset({"-u", "-C"})),
+    "command": Lanciatore(),
+    "builtin": Lanciatore(),
+    "env": Lanciatore(frozenset({"-u", "-C", "--unset", "--chdir"}), stringa=frozenset({"-S", "--split-string"})),
+    "exec": Lanciatore(frozenset({"-a"})),
+    "nohup": Lanciatore(),
+    "setsid": Lanciatore(),
+    "time": Lanciatore(frozenset({"-f", "-o", "--format", "--output"})),
+    "timeout": Lanciatore(frozenset({"-s", "-k", "--signal", "--kill-after"}), posizionali=1),
+    "nice": Lanciatore(frozenset({"-n", "--adjustment"})),
+    "ionice": Lanciatore(frozenset({"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"})),
+    "stdbuf": Lanciatore(frozenset({"-i", "-o", "-e", "--input", "--output", "--error"})),
+    "flock": Lanciatore(
+        frozenset({"-w", "-E", "--timeout", "--wait", "--conflict-exit-code"}), posizionali=1, stringa=frozenset({"-c", "--command"})
+    ),
+    "unshare": Lanciatore(frozenset({"-S", "-G", "--setuid", "--setgid", "--propagation"})),
+    "xargs": Lanciatore(
+        frozenset({"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof",
+                   "--max-args", "--max-lines", "--max-procs", "--max-chars"})
+    ),
+    "watch": Lanciatore(frozenset({"-n", "--interval"})),
+    "busybox": Lanciatore(),
+    "chroot": Lanciatore(frozenset({"--userspec", "--groups"}), posizionali=1),
+}
+# Chi alza i privilegi: `doas qualunque` si tratta come `sudo qualunque`.
+PRIVILEGIATI = frozenset({"sudo", "doas"})
+
+
+class Effettivo(NamedTuple):
+    nome: str  # il comando vero, senza path: `rm` per `/bin/rm`, `\rm`, `'rm'`
+    parole: tuple[str, ...]  # dal comando in poi, nome com'è scritto (con il path) e argomenti
+    lanciatori: tuple[str, ...]  # ciò che gli stava davanti: ("sudo", "nice")
+
+    @property
+    def args(self) -> tuple[str, ...]:
+        return self.parole[1:]
+
+    @property
+    def con_privilegi(self) -> bool:
+        return bool(PRIVILEGIATI.intersection(self.lanciatori))
+
+
+def _command_stampa(args: tuple[str, ...] | list[str]) -> bool:
+    """`command -v rm`, `-V`, `-pv`: stampa dove sta il comando, non lo lancia."""
+    for a in args:
+        if not a.startswith("-") or a == "--":
+            return False
+        if re.fullmatch(r"-[pvV]*[vV][pvV]*", a):
+            return True
+    return False
+
+
+def _dopo_opzioni(parole: list[str], j: int, spec: Lanciatore) -> tuple[list[str], int]:
+    """L'indice del comando che un lanciatore lancia: dopo le sue opzioni, i valori
+    che si portano dietro e i suoi argomenti fissi. Se un'opzione porta una riga di
+    comando (`env -S 'rm -rf x'`), la riga prende il posto delle opzioni."""
+    corti = {v[1] for v in spec.valori if len(v) == 2}
+    posizionali, opzioni, n = spec.posizionali, True, len(parole)
+    while j < n:
+        w = parole[j]
+        if opzioni and w == "--":
+            opzioni = False
+            j += 1
+        elif opzioni and w.startswith("-") and len(w) > 1:
+            base, uguale, valore = w.partition("=")
+            if base in spec.stringa:
+                if not uguale:
+                    valore = parole[j + 1] if j + 1 < n else ""
+                    j += 1
+                try:
+                    riga = shlex.split(valore)
+                except ValueError:
+                    riga = valore.split()
+                return riga + parole[j + 1:], 0
+            if base in spec.valori:
+                j += 1 if uguale else 2
+            elif w[1] != "-" and (k := next((x for x, ch in enumerate(w[1:]) if ch in corti), None)) is not None:
+                # `-nu deploy`: l'ultima lettera con un valore si prende la parola dopo;
+                # se non è l'ultima, il valore è attaccato (`-n10`).
+                j += 2 if k == len(w) - 2 else 1
+            else:
+                j += 1
+        elif posizionali > 0:
+            posizionali -= 1
+            j += 1
+        else:
+            break
+    return parole, min(j, n)
+
+
+def comando_effettivo(parole: tuple[str, ...] | list[str]) -> Effettivo:
+    """Il comando vero di una riga di parole (`Comando.parole`), con i suoi argomenti.
+
+    Salta ciò che gli sta davanti senza essere lui: parole chiave (`then`, `do`, `{`,
+    `!`), assegnamenti (`FOO="a b"`, `PATH+=x`) e lanciatori (`sudo -u deploy`,
+    `nice -n 10`, `timeout 60`, `env -i -u HOME`, `flock f`…), ciascuno con le sue
+    opzioni. Il nome è senza path, backslash e apici: `/bin/rm`, `\\rm` e `'rm'`
+    sono rm. Chi non ha un comando (`FOO=1`, `sudo -v`) ha il nome vuoto, e i suoi
+    lanciatori restano: `sudo` senza comando è comunque un `sudo`.
+    """
+    parole = list(parole)
+    lanciatori: list[str] = []
+    i = 0
+    while i < len(parole):
+        p = parole[i]
+        if p in PAROLE_CHIAVE or ASSEGNAMENTO.match(p):
+            i += 1
+            continue
+        nome = os.path.basename(p)
+        spec = LANCIATORI.get(nome)
+        if spec is None or (nome == "command" and _command_stampa(parole[i + 1:])):
+            break
+        lanciatori.append(nome)
+        parole, i = _dopo_opzioni(parole, i + 1, spec)
+    if i >= len(parole):
+        return Effettivo("", (), tuple(lanciatori))
+    return Effettivo(os.path.basename(parole[i]), tuple(parole[i:]), tuple(lanciatori))
+
+
+@functools.lru_cache(maxsize=64)
+def effettivi(testo: str) -> tuple[Effettivo, ...]:
+    """Il comando vero di ogni comando di `testo`."""
+    return tuple(comando_effettivo(c.parole) for c in comandi(testo))
+
+
+# ---------------------------------------------------------------------------
 # Bash: cancellazioni
 # ---------------------------------------------------------------------------
 
-# `timeout [opzioni] 60 cmd`: lancia cmd, che resta in posizione di comando.
-TIMEOUT_PREFIX = r"\btimeout\s+(?:[^\s;&|]+\s+)*?\d[\d.]*[smhd]?\s+"
-# In posizione di comando, anche dietro ciò che lancia il comando seguente senza
-# cambiarlo: `command rm -rf "$X"` (la forma di nvm.sh), `env rm`, `FOO=1 rm`.
-RM_PREFIX = r"(?:(?:command|builtin|exec|nohup|time|env(?:\s+-[^\s;&|]+)*|\w+=[^\s;&|]*)\s+)*"
-RM_ANY = re.compile(
-    r"(?:(?:^|[;&|(\n])\s*" + RM_PREFIX + r"|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX
-    + r")rm\s+(?P<args>[^;&|)\n]*)",
-    re.M,
-)
 RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s|$)")
 DANGEROUS_RM_TARGET = re.compile(
     r"""^(?:["']?)(?:
@@ -350,43 +917,86 @@ DANGEROUS_RM_TARGET = re.compile(
     )""",
     re.X,
 )
-FIND_DELETE = re.compile(
-    r"(?:^|[;&|(]\s*)(?:sudo\s+|" + TIMEOUT_PREFIX + r")?find\s+(?P<root>[^-\s;&|][^\s;&|]*)?[^;&|]*?(?:-delete\b|-exec\s+(?:sudo\s+)?rm\b)"
-)
+FIND_ESEGUE = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+
+def eseguiti_da_find(e: Effettivo) -> list[Effettivo]:
+    """I comandi che un find lancia con `-exec`/`-execdir`/`-ok`/`-okdir`. Per la shell
+    sono argomenti di find (il `;` è escapato), quindi `effettivi()` non li vede."""
+    if e.nome != "find":
+        return []
+    args, eseguiti, k = list(e.args), [], 0
+    while k < len(args):
+        if args[k] in FIND_ESEGUE:
+            fine = k + 1
+            while fine < len(args) and args[fine] not in (";", "+"):
+                fine += 1
+            eseguiti.append(comando_effettivo(args[k + 1:fine]))
+            k = fine
+        k += 1
+    return eseguiti
+
+
+def effettivi_e_find(testo: str) -> list[Effettivo]:
+    """`effettivi(testo)` più i comandi lanciati da find: per i controlli su un comando
+    ovunque compaia, come `sudo rm` dentro `find … -exec sudo rm {} +`."""
+    return [s for e in effettivi(testo) for s in (e, *eseguiti_da_find(e))]
+
+
+def find_che_cancella(e: Effettivo) -> list[str] | None:
+    """Le radici di un find che cancella (`-delete`, o `-exec`/`-execdir` di rm, anche
+    dietro `command`, `sudo`…, o di un rsync --delete), o None se non cancella o `e`
+    non è un find."""
+    if e.nome != "find":
+        return None
+    args = list(e.args)
+    k = 0
+    while k < len(args) and not args[k].startswith("-") and args[k] not in ("(", "!"):
+        k += 1
+    radici = args[:k] or ["."]
+    cancella = "-delete" in args[k:] or any(
+        s.nome == "rm" or (s.nome == "rsync" and any(a.startswith("--delete") for a in s.args))
+        for s in eseguiti_da_find(e)
+    )
+    return radici if cancella else None
 
 
 def check_rm(cmd: str) -> None:
-    for match in RM_ANY.finditer(cmd):
-        args = match.group("args")
-        recursive = RM_RECURSIVE_FLAG.search(" " + args) is not None
-        variable_only: str | None = None
-        for arg in args.split():
-            if arg.startswith("-") or not DANGEROUS_RM_TARGET.match(arg):
-                continue
-            # Un rm non ricorsivo su una variabile ha raggio limitato: conferma,
-            # non blocco. Tutto il resto (ricorsivo, home, radici, glob) è blocco.
-            if not recursive and re.match(r"""^["']?[$\{]""", arg):
-                variable_only = variable_only or arg
-                continue
-            deny(
-                f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
-                "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
-                "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
-                "(guardrail: filesystem-shell-segreti.md)"
-            )
-        if variable_only:
+    for e in effettivi(cmd):
+        if e.nome == "rm":
+            giudica_rm(list(e.args))
+        elif (radici := find_che_cancella(e)) is not None:
+            for root in radici:
+                if root != "." and DANGEROUS_RM_TARGET.match(root):
+                    deny(f"find … -delete / -exec rm a partire da {root!r}: cancellazione ricorsiva su un bersaglio non sicuro.")
             ask(
-                f"rm su una variabile ({variable_only!r}): il bersaglio dipende dal valore al momento "
-                "dell'esecuzione, e una variabile vuota o con spazi cancella altro. Stampa il path, "
-                "mostralo, e usa quello letterale. Conferma?"
+                f"find … -delete / -exec rm a partire da {radici[0]!r}: cancella tutto ciò che il predicato seleziona. "
+                "Prima lo stesso find senza -delete, mostrato all'utente. Conferma?"
             )
-    for match in FIND_DELETE.finditer(cmd):
-        root = match.group("root") or "."
-        if root != "." and DANGEROUS_RM_TARGET.match(root):
-            deny(f"find … -delete / -exec rm a partire da {root!r}: cancellazione ricorsiva su un bersaglio non sicuro.")
+
+
+def giudica_rm(args: list[str]) -> None:
+    recursive = RM_RECURSIVE_FLAG.search(" " + " ".join(args)) is not None
+    variable_only: str | None = None
+    for arg in args:
+        if arg.startswith("-") or not DANGEROUS_RM_TARGET.match(arg):
+            continue
+        # Un rm non ricorsivo su una variabile ha raggio limitato: conferma,
+        # non blocco. Tutto il resto (ricorsivo, home, radici, glob) è blocco.
+        if not recursive and re.match(r"""^["']?[$\{]""", arg):
+            variable_only = variable_only or arg
+            continue
+        deny(
+            f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
+            "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
+            "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
+            "(guardrail: filesystem-shell-segreti.md)"
+        )
+    if variable_only:
         ask(
-            f"find … -delete / -exec rm a partire da {root!r}: cancella tutto ciò che il predicato seleziona. "
-            "Prima lo stesso find senza -delete, mostrato all'utente. Conferma?"
+            f"rm su una variabile ({variable_only!r}): il bersaglio dipende dal valore al momento "
+            "dell'esecuzione, e una variabile vuota o con spazi cancella altro. Stampa il path, "
+            "mostralo, e usa quello letterale. Conferma?"
         )
 
 
@@ -409,10 +1019,12 @@ SECRET_FILE = re.compile(
 )
 # Comandi che stampano o trasformano il contenuto di un file: il segreto finisce
 # nella trascrizione della sessione, che resta su disco.
-SECRET_READERS = re.compile(
-    r"\b(cat|bat|tac|less|more|head|tail|nl|od|xxd|strings|grep|egrep|fgrep|rg|ag|awk|sed|cut|base64|jq|tee)\b"
+SECRET_READERS = frozenset(
+    {"cat", "bat", "tac", "less", "more", "head", "tail", "nl", "od", "xxd", "strings", "grep", "egrep",
+     "fgrep", "rg", "ag", "awk", "sed", "cut", "base64", "jq", "tee"}
 )
-SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
+# `source f` e `. f`: leggono un file nella shell corrente (segreti e script).
+COMANDI_SOURCE = frozenset({"source", "."})
 # Comandi il cui primo operando è un'espressione, non un file: in
 # `grep "\.env" casi.jsonl` quel `.env` è una regex e non si legge nessun segreto.
 PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "perl"}
@@ -428,8 +1040,9 @@ PROTECTED_PATH = re.compile(
     r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)",
     re.I,  # su NTFS (WSL, /mnt/c) .GUARDRAIL.JSON è lo stesso file
 )
-SHELL_WRITER_CMDS = re.compile(
-    r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b"
+SHELL_WRITER_CMDS = frozenset(
+    {"tee", "cp", "mv", "rm", "sed", "perl", "truncate", "ln", "install", "chmod", "chattr", "dd", "rsync",
+     "python", "python3", "node"}
 )
 
 # Chi scrive, e *dove*. Nominare un path non è modificarlo: `ls .claude/hooks/`
@@ -449,44 +1062,7 @@ WRITER_TARGETS = {
     "dd": "of",
     "python": "opaque", "python3": "opaque", "node": "opaque",
 }
-# Quel che sta *prima* del vero comando: `sudo -u deploy rm x`, `FOO=1 tee y`,
-# `timeout 60 grep …`.
-COMMAND_PREFIX = re.compile(r"^(?:sudo|command|env|nohup|time|xargs|\w+=.*)$")
-PREFIX_VALUE_FLAGS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-n", "-I"}
-# `timeout` ha una durata obbligatoria fra sé e il comando: senza saltarla,
-# `timeout 60 grep -o "process\.env" bin` prende 60 per il comando e il pattern
-# per un file. Falso positivo del 2026-09-28.
-DURATA = re.compile(r"\d+(?:\.\d+)?[smhd]?")
-TIMEOUT_VALUE_FLAGS = {"-s", "-k", "--signal", "--kill-after"}
 
-
-def dopo_timeout(tokens: list[str], indice: int) -> int:
-    """L'indice del comando che `timeout` lancia: dopo le sue opzioni e la durata."""
-    while indice < len(tokens) and tokens[indice].startswith("-"):
-        indice += 2 if tokens[indice] in TIMEOUT_VALUE_FLAGS else 1
-    if indice < len(tokens) and DURATA.fullmatch(tokens[indice]):
-        indice += 1
-    return indice
-
-
-def senza_prefissi(tokens: list[str]) -> list[str]:
-    """Il comando vero con i suoi argomenti, tolto ciò che gli sta davanti."""
-    seen_prefix = False
-    while tokens:
-        if os.path.basename(tokens[0]) == "timeout":
-            tokens = tokens[dopo_timeout(tokens, 1):]
-            seen_prefix = False
-            continue
-        if COMMAND_PREFIX.match(tokens[0]):
-            tokens = tokens[1:]
-            seen_prefix = True
-            continue
-        # I flag di sudo/env/xargs, non quelli del comando vero.
-        if seen_prefix and tokens[0].startswith("-"):
-            tokens = tokens[2:] if tokens[0] in PREFIX_VALUE_FLAGS else tokens[1:]
-            continue
-        break
-    return tokens
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
 # Codice (Python, JavaScript) che scrive, cancella o sposta file. Largo di
 # proposito: un falso allarme qui riporta solo al comportamento prudente di prima.
@@ -533,6 +1109,7 @@ def ultimo_segmento(testo: str) -> str | None:
     corrente: list[str] = []
     stato = ""  # "" fuori, "'" o '"' dentro una stringa, "#" in un commento
     i, n = 0, len(testo)
+    _spesa[:] = [0, SPESA_PER_CARATTERE * n + 10_000]  # il tetto di _fine_graffe, per questo testo
     while i < n:
         c = testo[i]
         if stato == "#":
@@ -552,6 +1129,15 @@ def ultimo_segmento(testo: str) -> str | None:
                 seguente = testo[i + 1]
                 corrente.append("\\" + ("_" if seguente in "();<>|&" else seguente))
             i += 2
+            continue
+        if c == "$" and testo.startswith("{", i + 1):
+            # `${X:-;}`: il `;` e la `}` dentro non separano niente. Se non si riesce
+            # a leggerla con certezza, chi riceve il testo resta ignoto.
+            fine = _fine_graffe(testo, i)
+            if fine < 0:
+                return None
+            corrente.append("".join("_" if ch in "();<>|&'\"`\\{}" else ch for ch in testo[i:fine + 1]))
+            i = fine + 1
             continue
         if stato == '"':
             stato = "" if c == '"' else stato
@@ -604,26 +1190,19 @@ def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
             salta = True
             continue
         comando.append(token)
-    comando = senza_prefissi(comando)
-    if not comando:
+    effettivo = comando_effettivo(comando)
+    if not effettivo.nome:
         return None
-    return os.path.basename(comando[0]), comando[1:], uscita
-# Il bersaglio di una redirezione è il token che la segue, non il comando che la
-# contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
-REDIRECT = re.compile(r"(?:^|\s)\d*>>?\s*(?P<target>[^\s;&|<>()]+)")
-
-
-def shell_segments(text: str) -> list[str]:
-    return [s for s in re.split(r"[;&|\n]+|\$\(|\)", text) if s.strip()]
-
-
-def redirect_targets(segment: str) -> list[str]:
-    return [m.group("target") for m in REDIRECT.finditer(segment)]
+    return effettivo.nome, list(effettivo.args), uscita
+# Il bersaglio di una redirezione non è un argomento del comando che la contiene:
+# `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook. `comandi` lo
+# tiene a parte, in `Comando.uscite`.
 
 
 def shell_tokens(segment: str) -> list[str]:
-    """Token del comando, tolte le redirezioni. Virgolette sbilanciate: best effort."""
-    cleaned = REDIRECT.sub(" ", segment)
+    """Token di un segmento scritto a mano (le pipeline del SQL), tolte le redirezioni
+    in uscita. Virgolette sbilanciate: best effort."""
+    cleaned = re.sub(r"(?:^|\s)\d*>>?\s*[^\s;&|<>()]+", " ", segment)
     try:
         return shlex.split(cleaned)
     except ValueError:
@@ -644,16 +1223,14 @@ def dati_di_plugin(arg: str) -> bool:
     return reale != base and is_inside(reale, base)
 
 
-def write_targets(segment: str) -> list[str]:
+def write_targets(comando: Comando) -> list[str]:
     """Gli operandi su cui il comando *scrive*. Un comando di lettura non ne ha."""
-    targets = redirect_targets(segment)
-    tokens = senza_prefissi(shell_tokens(segment))
-    if not tokens:
-        return targets
-    mode = WRITER_TARGETS.get(os.path.basename(tokens[0]))
+    targets = list(comando.uscite)
+    e = comando_effettivo(comando.parole)
+    mode = WRITER_TARGETS.get(e.nome)
     if mode is None:
         return targets
-    args = tokens[1:]
+    args = list(e.args)
     flags = [a for a in args if a.startswith("-")]
     operands = [a for a in args if not a.startswith("-")]
     if mode == "of":
@@ -682,14 +1259,13 @@ def secret_names(values: list[str]) -> list[str]:
     ]
 
 
-def file_operands(segment: str) -> list[str]:
-    """Gli operandi che il comando tratta come file, senza il pattern di grep/sed/awk."""
-    tokens = senza_prefissi(shell_tokens(segment))
-    if not tokens:
-        return []
-    args = tokens[1:]
-    if os.path.basename(tokens[0]) not in PATTERN_COMMANDS:
-        return [a for a in args if not a.startswith("-")]
+def file_operands(comando: Comando) -> list[str]:
+    """Gli operandi che il comando tratta come file, senza il pattern di grep/sed/awk.
+    Un file in ingresso (`cat < .env`) è un operando."""
+    e = comando_effettivo(comando.parole)
+    args = e.args
+    if e.nome not in PATTERN_COMMANDS:
+        return [a for a in args if not a.startswith("-")] + list(comando.entrate)
     operands: list[str] = []
     pattern_da_flag = salta = False
     for arg in args:
@@ -703,40 +1279,39 @@ def file_operands(segment: str) -> list[str]:
             # Il valore di -e è il pattern (`sed -e "s/x/os.environ['A']/"`): non è un
             # file. Quello di -f sì, e si legge.
             salta = "=" not in arg and (arg in ("--regexp", "--expression") or (arg[1] != "-" and arg.endswith("e")))
-    return operands if pattern_da_flag else operands[1:]
+    return (operands if pattern_da_flag else operands[1:]) + list(comando.entrate)
 
 
 def check_secret_reads(text: str) -> None:
     """Blocca `cat .env` e affini: permissions.deny copre il tool Read, non la shell."""
-    for segment in shell_segments(text):
-        found = secret_names(file_operands(segment))
-        written = secret_names(redirect_targets(segment))
+    for comando in comandi(text):
+        e = comando_effettivo(comando.parole)
+        found = secret_names(file_operands(comando))
+        written = secret_names(list(comando.uscite))
         if not found and not written:
             continue
-        if found and SECRET_READERS.search(segment):
+        if found and e.nome in SECRET_READERS:
             deny(
                 f"lettura di un file di segreti da shell ({found[0]}): il contenuto finirebbe "
                 "nella trascrizione, che resta su disco. Per il nome di una variabile leggi "
                 ".env.example; per il valore, chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
             )
-        if found and SECRET_SOURCERS.search(segment):
+        if found and e.nome in COMANDI_SOURCE:
             ask(
                 f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
                 "del comando. Conferma che è voluto?"
             )
         # cp/mv/ln restano presi in *entrambe* le direzioni: `cp .env x && cat x`
         # ricicla il nome. Le redirezioni no: contano solo se scrivono sul segreto.
-        if written or (found and SHELL_WRITER_CMDS.search(segment)):
+        if written or (found and e.nome in SHELL_WRITER_CMDS):
             name = (written + found)[0]
             ask(f"scrittura da shell su un file di segreti ({name}). Conferma che è voluto e che il file è gitignorato.")
 
 
-def removed_paths(segment: str) -> list[str]:
+def removed_paths(comando: Comando) -> list[str]:
     """I file che il comando toglie dal loro posto: rm e unlink, la sorgente di mv, git rm/mv."""
-    tokens = senza_prefissi(shell_tokens(segment))
-    if not tokens:
-        return []
-    command, args = os.path.basename(tokens[0]), tokens[1:]
+    e = comando_effettivo(comando.parole)
+    command, args = e.nome, list(e.args)
     if command == "git":
         while args and args[0].startswith("-"):
             args = args[2:] if args[0] in ("-C", "-c") else args[1:]
@@ -848,12 +1423,10 @@ def cartella_governata(path: Path) -> Path:
     return path.parent
 
 
-def link_al_guardrail(segment: str) -> bool:
+def link_al_guardrail(comando: Comando) -> bool:
     """`ln` o `cp -l/-s` con .guardrail.json fra gli operandi: un secondo nome per il file."""
-    tokens = senza_prefissi(shell_tokens(segment))
-    if not tokens:
-        return False
-    command, args = os.path.basename(tokens[0]), tokens[1:]
+    e = comando_effettivo(comando.parole)
+    command, args = e.nome, e.args
     collega = command == "ln" or (
         command == "cp" and any(a in ("-l", "-s", "--link", "--symbolic-link") or re.match(r"^-[a-zA-Z]*[ls]", a) for a in args)
     )
@@ -876,9 +1449,8 @@ def modifica_protetta(match: re.Match) -> None:
 def giudica_codice_inline(text: str) -> str:
     """Il codice di `node -e` e `python3 -c` si giudica intero, e poi si toglie.
 
-    shell_segments non guarda le virgolette: le parentesi e i `;` del codice
-    spezzerebbero la riga a metà, e un path letto dentro `require(…)` sembrerebbe
-    un operando di node, cioè un bersaglio. È il falso positivo del 2026-10-04 su
+    Un path letto dentro `require(…)` sembrerebbe un operando di node, cioè un
+    bersaglio. È il falso positivo del 2026-10-04 su
     `.claude/plugins/known_marketplaces.json`. Se il codice scrive o lancia
     processi, i path protetti che nomina sono bersagli; se no, non ne ha.
 
@@ -912,9 +1484,9 @@ def giudica_codice_inline(text: str) -> str:
 
 def check_protected_writes(text: str, cwd: str = "") -> None:
     text = giudica_codice_inline(text)
-    for segment in shell_segments(text):
+    for comando in comandi(text):
         tolto = None
-        for raw in removed_paths(segment):
+        for raw in removed_paths(comando):
             if operando_vuoto(raw):
                 continue
             if nome_guardrail(Path(raw).name):
@@ -925,7 +1497,11 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
                     tolto = f"{raw}, che contiene un .guardrail.json"
             if tolto:
                 break
-        if tolto is None and "guardrail" in segment.lower() and FIND_DELETE.search(segment):
+        if (
+            tolto is None
+            and "guardrail" in comando.testo.lower()
+            and find_che_cancella(comando_effettivo(comando.parole)) is not None
+        ):
             tolto = "un .guardrail.json (find … -delete)"
         if tolto:
             deny(
@@ -933,12 +1509,12 @@ def check_protected_writes(text: str, cwd: str = "") -> None:
                 "decisione dell'utente, che lo fa da sé. Se una regola ti blocca a torto, spiegalo "
                 "all'utente. (guardrail: RULES-CORE.md 8)"
             )
-        if link_al_guardrail(segment):
+        if link_al_guardrail(comando):
             deny(
                 "un link a .guardrail.json gli darebbe un secondo nome, da cui riscriverlo senza passare "
                 "dalla conferma. Se serve una copia, usa cp senza -l/-s. (guardrail: RULES-CORE.md 8)"
             )
-        for target in write_targets(segment):
+        for target in write_targets(comando):
             if operando_vuoto(target):
                 continue
             # Anche dove porta: `note.json` può essere un link a .guardrail.json.
@@ -996,6 +1572,14 @@ HEREDOC = re.compile(
 GIT_STDIN_FLAGS = ("-F", "--file", "--body-file", "--notes-file")
 
 
+def git_legge_stdin(args) -> bool:
+    """git/gh legge il testo dallo stdin: `-F -` o `--file=-` e simili."""
+    return any(
+        (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
+        for i, a in enumerate(args)
+    )
+
+
 def riscrivi_heredoc(text: str, da_tagliare) -> str:
     """Toglie il corpo degli heredoc per cui `da_tagliare(m, ricevente)` è vero.
 
@@ -1048,10 +1632,7 @@ def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool
     if nome == "tee":
         return True
     if nome in ("git", "gh"):
-        return any(
-            (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
-            for i, a in enumerate(args)
-        )
+        return git_legge_stdin(args)
     return False
 
 # Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
@@ -1081,12 +1662,10 @@ INTERPRETERS = re.compile(r"python[\d.]*|node|ruby|perl|php|Rscript")
 INTERPRETERS_WITHOUT_SHELL = re.compile(r"python[\d.]*|node|Rscript")
 
 
-SCRIPT_BY_INTERPRETER = re.compile(
-    r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<interp>(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby)\s+"
-    r"(?P<flags>(?:-[\w=-]+\s+)*)(?P<path>[^\s;&|()-][^\s;&|()]*)"
-)
-SCRIPT_DIRECT = re.compile(r"(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?P<path>(?:\./|\.\./|~/)[^\s;&|()]+)")
-SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(?P<path>[^\s;&|()]+)")
+# Chi legge un file e lo esegue come script. Il nome è quello del comando vero
+# (`comando_effettivo`): `nohup bash x.sh`, `timeout 60 python3 x.py`, `/bin/bash x.sh`.
+SCRIPT_INTERPRETER = re.compile(r"(?:ba|z|da|k)?sh|python3?|node|php|perl|ruby")
+SHELL_INTERPRETER = re.compile(r"(?:ba|z|da|k)?sh")
 
 
 def strip_data_heredocs(text: str) -> str:
@@ -1509,34 +2088,54 @@ def check_codice_negli_heredoc(text: str, config: dict, cwd: str, depth: int) ->
     riscrivi_heredoc(text, guarda)
 
 
-def solo_sintassi(match: re.Match) -> bool:
+def solo_sintassi(nome: str, flags: list[str]) -> bool:
     """`bash -n script.sh`: la shell legge lo script e ne controlla la sintassi,
     senza eseguirne niente. Scansionarlo come se partisse fermava proprio il
     controllo che si fa prima di lanciarlo (falso positivo del 2026-10-03/04).
     Con -i la shell è interattiva e -n non vale più."""
-    if not re.fullmatch(r"(?:ba|z|da|k)?sh", match.group("interp")):
+    if not SHELL_INTERPRETER.fullmatch(nome):
         return False
-    lettere = "".join(f[1:] for f in match.group("flags").split() if re.fullmatch(r"-[a-zA-Z]+", f))
+    lettere = "".join(f[1:] for f in flags if re.fullmatch(r"-[a-zA-Z]+", f))
     return "n" in lettere and "i" not in lettere
+
+
+def script_nominato(e: Effettivo) -> str | None:
+    """Il file che il comando vero esegue come script, o None.
+
+    Tre forme: `./x.sh` (un path relativo alla cartella o alla home come comando),
+    `bash x.sh` / `python3 x.py` (un interprete e il suo primo argomento che non è
+    un'opzione), `source x.sh` / `. x.sh`."""
+    if not e.nome:
+        return None
+    if e.nome in COMANDI_SOURCE:
+        return e.args[0] if e.args else None
+    if e.parole[0].startswith(("./", "../", "~/")):
+        return e.parole[0]
+    if not SCRIPT_INTERPRETER.fullmatch(e.nome):
+        return None
+    # Le opzioni prima del file; il file è il primo argomento che non lo è. Con
+    # `bash -c "./x.sh"` quell'argomento è la stringa, che se è un path si legge.
+    prima = list(itertools.takewhile(lambda a: a.startswith("-"), e.args))
+    operandi = e.args[len(prima):]
+    if not operandi or solo_sintassi(e.nome, prima):
+        return None
+    return operandi[0]
 
 
 def invoked_scripts(text: str, cwd: str) -> list[Path]:
     found: list[Path] = []
-    for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
-        for match in regex.finditer(text):
-            if regex is SCRIPT_BY_INTERPRETER and solo_sintassi(match):
-                continue
-            raw = match.group("path").strip("\"'")
-            if "$" in raw:
-                continue
-            path = Path(os.path.expanduser(raw))
-            if not path.is_absolute():
-                path = Path(cwd or os.getcwd()) / path
-            try:
-                if path.is_file() and path.stat().st_size <= SCRIPT_MAX_BYTES and path not in found:
-                    found.append(path)
-            except OSError:
-                continue
+    for e in effettivi(text):
+        raw = script_nominato(e)
+        if raw is None or "$" in raw:
+            continue
+        path = Path(os.path.expanduser(raw))
+        if not path.is_absolute():
+            path = Path(cwd or os.getcwd()) / path
+        try:
+            if path.is_file() and path.stat().st_size <= SCRIPT_MAX_BYTES and path not in found:
+                found.append(path)
+        except OSError:
+            continue
     return found
 
 
@@ -1632,69 +2231,28 @@ def inline_shell_payloads(text: str) -> list[str]:
     davvero invocato: in `grep -n "bash -c \\"rm -rf\\""` il comando è `grep`, e
     non succede niente — la difesa dal falso positivo del 2026-09-17 resta.
     """
-    lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
     payloads: list[str] = []
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return payloads
-
-    at_start = True
-    indice = 0
-    while indice < len(tokens):
-        token = tokens[indice]
-        indice += 1
-        if token in SHELL_SEPARATORS:
-            at_start = True
-            continue
-        if not at_start:
-            continue
-        if ENV_ASSIGNMENT.fullmatch(token) or token in COMMAND_WRAPPERS:
-            continue
-        if os.path.basename(token) == "timeout":
-            indice = dopo_timeout(tokens, indice)
-            continue
-        at_start = False
-        nome = os.path.basename(token)
-
+    for e in effettivi(text):
+        args = list(e.args)
         # `bash -c "…"`, anche con flag composti (`-lc`, `-ec`).
-        if nome in SHELL_INTERPRETERS:
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                flag = tokens[indice]
-                indice += 1
+        if e.nome in SHELL_INTERPRETERS:
+            for indice, flag in enumerate(args):
                 if flag.startswith("-") and not flag.startswith("--") and "c" in flag:
-                    if indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                        payloads.append(tokens[indice])
-                        indice += 1
+                    if indice + 1 < len(args):
+                        payloads.append(args[indice + 1])
                     break
                 if not flag.startswith("-"):
                     break  # è il path di uno script: se ne occupa check_scripts
         # `eval rm -rf "$X"`: tutto quello che segue è codice.
-        elif nome == "eval":
-            resto = []
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                resto.append(tokens[indice])
-                indice += 1
-            if resto:
-                payloads.append(" ".join(resto))
+        elif e.nome == "eval":
+            if args:
+                payloads.append(" ".join(args))
         # `ssh [opzioni] host "…"`: il comando remoto è tutto ciò che segue l'host.
-        elif nome == "ssh":
-            host_visto = False
-            resto = []
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                pezzo = tokens[indice]
-                indice += 1
-                if not host_visto:
-                    if pezzo in SSH_VALUE_FLAGS:
-                        indice += 1
-                        continue
-                    if pezzo.startswith("-"):
-                        continue
-                    host_visto = True
-                    continue
-                resto.append(pezzo)
+        elif e.nome == "ssh":
+            indice = 0
+            while indice < len(args) and args[indice].startswith("-"):
+                indice += 2 if args[indice] in SSH_VALUE_FLAGS else 1
+            resto = args[indice + 1:]
             if resto:
                 payloads.append(" ".join(resto))
     return payloads
@@ -1735,22 +2293,23 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
     check_inline_shell(text, config, cwd, depth)
+    # Prima di check_rm: un `find -exec sudo rm` lì sarebbe solo una conferma.
+    if any(e.nome == "rm" and e.con_privilegi for e in effettivi_e_find(text)):
+        deny("sudo/doas rm: cancellazioni con privilegi non passano dall'agente.")
     check_rm(text)
     check_secret_reads(text)
     check_protected_writes(text, cwd)
 
     # Distruzione di sistema o supply chain
-    if re.search(r"\bsudo\s+rm\b", text):
-        deny("sudo rm: cancellazioni con privilegi non passano dall'agente.")
     if re.search(r"\b(mkfs(\.\w+)?|dd\s+[^|;]*of=/dev/|wsl(\.exe)?\s+--unregister)\b", text):
         deny("comando che distrugge un filesystem o una distro.")
     if re.search(r"\bchmod\s+(-R\s+)?[0-7]*777\b", text):
         deny("chmod 777: permessi aperti a tutti, mai.")
     if re.search(r"\b(chmod|chown|chgrp)\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+|--recursive\s+)[^;|]*\s(?:~|\$HOME|/home/[\w.-]+|/)/?(?:\s|$)", text):
         deny("chmod/chown ricorsivo sulla home o sulla radice: rende inutilizzabile l'ambiente dell'utente.")
-    if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
+    if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(?:(?:sudo|doas)\s+)?(ba|z|da)?sh\b", text):
         deny("curl|sh: esecuzione di codice scaricato al volo. Scarica il file, leggilo, poi esegui.")
-    if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
+    if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(?:(?:sudo|doas)\s+)?(ba|z|da)?sh\b", text):
         deny("codice decodificato o costruito al volo e passato a sh: illeggibile per chi controlla. Scrivilo in un file, poi esegui.")
 
     # Le regole che seguono sono regex sul testo: valgono solo se il programma
@@ -1809,8 +2368,8 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
         check_scripts(text, config, cwd)
 
     # Privilegi: mai in silenzio
-    if re.search(r"(?:^|[;&|(]\s*)sudo\b", text):
-        ask("sudo: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
+    if any(e.con_privilegi for e in effettivi_e_find(text)):
+        ask("sudo/doas: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
 
     if (pattern := matches_any(config["ask_commands"], testo_progetto)):
         ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
@@ -1830,8 +2389,8 @@ def rsync_che_cancella(text: str) -> bool:
     positivo del 2026-10-03. `timeout 60 rsync …` e `find … -exec rsync …` restano
     presi: rsync è un token del segmento anche se non è il primo.
     """
-    for segment in shell_segments(text):
-        tokens = shell_tokens(segment)
+    for comando in comandi(text):
+        tokens = comando.parole
         for indice, token in enumerate(tokens):
             if not RSYNC.fullmatch(token):
                 continue
@@ -1846,11 +2405,6 @@ def rsync_che_cancella(text: str) -> bool:
 SQL_CLI_NAMES = frozenset(
     {"psql", "mysql", "mariadb", "sqlcmd", "pg_restore", "dropdb", "createdb", "mongosh", "redis-cli"}
 )
-# Token che stanno davanti al comando vero senza esserlo.
-COMMAND_WRAPPERS = frozenset({"sudo", "env", "command", "exec", "time", "nohup", "xargs", "then", "do", "else", "!"})
-# Separatori dopo i quali ricomincia un comando.
-SHELL_SEPARATORS = frozenset({";", "|", "||", "&", "&&", "(", ")", "{", "}", "&|"})
-ENV_ASSIGNMENT = re.compile(r"\w+=.*", re.S)
 
 
 def invoked_commands(text: str) -> frozenset[str]:
@@ -1860,61 +2414,10 @@ def invoked_commands(text: str) -> frozenset[str]:
     riga di codice che quella parola la contiene dentro una stringa: il nome sta
     in posizione di argomento, non di comando. Cercarlo come testo è il falso
     positivo del 2026-09-17, e blocca proprio chi sta diagnosticando il guard.
-
-    Un ritorno a capo vale come `;`, perché ogni riga ricomincia con un comando;
-    va sostituito prima, però, non riga per riga: una stringa che si estende su
-    più righe lascerebbe ogni riga con le virgolette scompagnate.
-
-    posix=True: `\\"` è un escape, come nella shell vera. Senza, una virgoletta
-    escapata dentro un argomento fa ripartire la lettura a metà stringa, e un
-    nome citato lì in mezzo sembra un comando.
-
-    Se le virgolette non tornano si ripiega sul comportamento testuale di prima
-    — tutte le parole — che sbaglia per eccesso di prudenza.
+    Il nome è quello del comando vero (`comando_effettivo`): `PGPASSWORD=x psql`,
+    `timeout -k 5 60 psql`, `then psql` sono psql.
     """
-    lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    names: set[str] = set()
-    at_start = True
-    skip_next = False
-    in_timeout = False
-    try:
-        for token in lexer:
-            if skip_next:  # il bersaglio di una redirezione non è un comando
-                skip_next = False
-                continue
-            if token and set(token) <= {"<", ">"}:
-                skip_next = True
-                continue
-            if token in SHELL_SEPARATORS:
-                at_start = True
-                in_timeout = False
-                continue
-            if not at_start:
-                continue
-            # `timeout -k 5 60 psql …`: opzioni e durata non sono il comando.
-            if in_timeout:
-                if token in TIMEOUT_VALUE_FLAGS:
-                    skip_next = True
-                    continue
-                if token.startswith("-"):
-                    continue
-                in_timeout = False
-                if DURATA.fullmatch(token):
-                    continue
-            if os.path.basename(token) == "timeout":
-                in_timeout = True
-                continue
-            if ENV_ASSIGNMENT.fullmatch(token):  # PGPASSWORD=x psql ...
-                continue
-            if token in COMMAND_WRAPPERS or token.startswith("-"):
-                continue
-            names.add(os.path.basename(token))
-            at_start = False
-    except ValueError:
-        return frozenset(re.findall(r"[\w.-]+", text))
-    return frozenset(names)
+    return frozenset(e.nome for e in effettivi(text) if e.nome)
 
 
 def shell_words(text: str) -> frozenset[str]:
@@ -1959,7 +2462,7 @@ CONN_ENV = re.compile(
 CONN_URI = re.compile(r"(?:postgres(?:ql)?|mysql|mariadb)://", re.I)
 LOOKS_LIKE_FILE = re.compile(r"[/\\]|\.\w+$")
 # Comandi che possono comparire nella stessa catena senza essere un bersaglio.
-DUMP_COMMANDS = frozenset({"pg_dump", "pg_dumpall", "mysqldump", "cat", "zcat", "gunzip", "gzip", "sudo", "env"})
+DUMP_COMMANDS = frozenset({"pg_dump", "pg_dumpall", "mysqldump", "cat", "zcat", "gunzip", "gzip", *LANCIATORI})
 
 
 def connection_targets(segment: str) -> str:

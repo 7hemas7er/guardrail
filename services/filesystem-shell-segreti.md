@@ -50,9 +50,9 @@ il comando: non risolve le variabili.
 |---|---|
 | `rm -r` con bersaglio variabile (`$X`, `${X}`), e `rm` (ricorsivo o no) su `~`, `/home/<utente>`, radice di sistema, `.`, `..`, glob nascosti, `*` | BLOCCO |
 | `rm` non ricorsivo con bersaglio variabile (`rm -f "$FILE"`) | CONFERMA |
-| `find … -delete`, `find … -exec rm` | CONFERMA; BLOCCO se la radice del find è uno dei bersagli sopra |
-| `sudo rm` | BLOCCO |
-| `sudo <qualunque altra cosa>` | CONFERMA |
+| `find … -delete`, `find … -exec rm` (anche `-execdir`, `-exec command rm`) | CONFERMA; BLOCCO se la radice del find è uno dei bersagli sopra |
+| `sudo rm`, `doas rm` | BLOCCO |
+| `sudo <qualunque altra cosa>`, `doas <qualunque altra cosa>` | CONFERMA |
 | `chmod`/`chown` ricorsivi sulla home o sulla radice | BLOCCO |
 | `mkfs`, `dd of=/dev/`, `chmod 777`, `curl \| sh`, `base64 -d \| sh` | BLOCCO |
 | `git clean -x` | BLOCCO |
@@ -78,6 +78,53 @@ momento, non un umano in un file del repo: per questo il `BLOCCO` resta blocco e
 non viene declassato a conferma, come invece accade per uno script invocato.
 Citare non è eseguire: in `grep "bash -c 'rm -rf'"` il comando è `grep`, e non
 succede niente.
+
+### Qual è il comando: una funzione sola
+
+Ogni regola che chiede «questo è `rm`? è `find`? è uno script? è `sudo`?» lo chiede
+a due funzioni di `hooks/guard.py`, le stesse per tutte: `comandi(testo)`, che
+spezza il testo come lo spezza la shell (separatori `; & | ( )` e a capo fuori da
+virgolette, escape e commenti; redirezioni a parte; `$(…)`, backtick e `<(…)`
+letti come comandi a sé), e `comando_effettivo(parole)`, che di ogni comando salta
+ciò che gli sta davanti senza esserlo e restituisce quello vero con i suoi
+argomenti. Salta:
+
+- le parole chiave: `then`, `do`, `else`, `elif`, `if`, `while`, `until`, `!`, `{`, `}`;
+  il `)` di un `case … pat)` è un separatore;
+- gli assegnamenti: `FOO=1`, `FOO="a b"`, `PATH+=:x`, `D=$(cd /tmp; pwd)`;
+- i lanciatori, ciascuno con le sue opzioni che prendono un valore (`sudo -u deploy`,
+  `nice -n 10`, `ionice -c 3`, `stdbuf -oL`, `time -p`, `timeout -k 5 60`, `flock f`,
+  `env -i -u HOME FOO=1`, `unshare -r`, `xargs -0 -n 1`…): `sudo`, `doas`, `command`
+  (non con `-v`), `builtin`, `env`, `exec`, `nohup`, `setsid`, `time`, `timeout`,
+  `nice`, `ionice`, `stdbuf`, `flock`, `unshare`, `xargs`, `watch`, `busybox`,
+  `chroot`. Il valore di `env -S 'rm -rf x'` (o `flock f -c '…'`) è una riga di comando,
+  e si legge come tale.
+
+Il nome del comando si legge senza path, backslash e apici: `/bin/rm`, `\rm`,
+`'rm'`, `command 'rm'` e `/usr/bin/env rm` sono `rm`. Quel che una regola vede è
+quindi lo stesso per `rm -rf "$X"`, `nohup nice -n 5 /bin/rm -rf "$X"` e
+`if [ -d x ]; then FOO="a b" command -p rm -rf "$X"; fi`. Lo usano: `rm` e `find`,
+`sudo`/`doas`, le rimozioni e le scritture su `.guardrail.json` e sui file protetti,
+le letture di segreti, `bash -c`/`eval`/`ssh`, i comandi SQL e gli script lanciati
+(`FOO=1 ./x.sh`, `nohup bash x.sh`, `timeout 60 bash x.sh` si leggono come `./x.sh`).
+Un lanciatore che manca nella tabella `LANCIATORI` davanti a `rm` lo nasconde: è
+una lista, e si aggiunge lì, in un posto solo.
+
+Citare non è eseguire: `grep "command rm -rf" f`, `git commit -m 'vieta rm -rf "$X"'`
+e `echo 'f() { rm -rf "$1"; }'` hanno un comando solo, grep, git, echo. Una
+definizione vera (`f() { rm -rf "$1"; }` senza apici) invece contiene `rm -rf "$1"`
+come comando, ed è bloccata come la forma nuda. Un comando annidato oltre 12
+livelli di `$(…)`, virgolette e backtick, o con `$(`, `"` e backtick aperti e mai
+chiusi in quantità, non si sa leggere (`${a:-${b}}` e `${a:-"x}"}` si leggono come la
+shell; una `${` che non si chiude lascia ignoto chi riceve un heredoc, e il corpo
+resta analizzato). Il corpo di un heredoc con il tag fra virgolette è testo solo se
+lo riceve un comando che archivia, da solo sulla riga: `cat`, `tee`, `git`/`gh` con
+`-F -` (anche dentro `"$( )"`, il corpo di una PR o di un commit). Lì ogni riga
+conta solo come comando che comincia lì, senza `$(`, backtick o separatori. Per
+chiunque altro (una shell, `ssh`, un interprete, un comando sconosciuto) il corpo
+resta analizzato: l'elenco è chiuso di proposito. Con il tag senza virgolette un
+`$` o un backtick nel corpo lo lasciano analizzato per intero. Un comando che non si sa leggere (annidato troppo, intricato) è un `BLOCCO`: lasciarlo passare
+vorrebbe dire che basta intricare un comando per saltare ogni controllo.
 
 **Limite dichiarato**: un interprete che *non* è una shell resta in gran parte
 fuori. Del codice passato come stringa (`python3 -c`, `node -e`) il hook guarda
@@ -135,8 +182,10 @@ Si guarda anche dove porta un percorso: scrivere su `note.json` che è un link a
 `.guardrail.json` è scrivere su `.guardrail.json`. E dove guardrail è acceso
 queste regole vengono prima di `allow_commands`, che non le esenta.
 
-**Limite dichiarato**: sono espressioni regolari su un comando di shell, e una
-variante che non prevedono si trova sempre. Un interprete che non è una shell
+**Limite dichiarato**: il comando vero si riconosce da una tabella di lanciatori e
+da una lettura della shell scritta a mano, e una variante che non prevedono si
+trova sempre (`su -c`, `curl … | env sh`, un alias, una funzione
+della shell dell'utente, il valore di una variabile usato come nome di comando). Un interprete che non è una shell
 resta fuori, come per ogni altra regola, salvo il caso descritto sopra; un
 `.guardrail.json` più profondo di due livelli sotto la cartella cancellata non
 viene cercato. Proteggono da un agente che sbaglia, non da uno che cerca il buco.
@@ -159,10 +208,10 @@ Sugli heredoc: uno che scrive su file (`cat > README.md <<EOF`, `git commit -F -
 in una guida non è eseguirlo; a meno che ciò che scrive finisca in una shell
 (`tee x <<EOF | bash`, `tee x <<'EOF' >(bash)`: tee scrive anche nella process
 substitution). Con il tag **senza virgolette**, invece, la shell esegue `$(…)` e
-i backtick del corpo *prima* di darlo a chiunque, `cat` e `git` compresi: di quel
-corpo il hook toglie il testo e tiene le sostituzioni, che giudica come comandi
-(e che le regole di progetto vedono), qualunque sia il ricevente, interpreti
-compresi. Con il tag fra virgolette sono testo. I backtick fuori da un heredoc
+i backtick del corpo *prima* di darlo a chiunque, `cat` e `git` compresi: con un
+`$` o un backtick nel corpo, quel corpo non si toglie e resta analizzato per
+intero, e le sue sostituzioni si giudicano anche come comandi a sé (e le regole
+di progetto le vedono), qualunque sia il ricevente, interpreti compresi. Con il tag fra virgolette sono testo. I backtick fuori da un heredoc
 valgono come `$(…)`, tranne fra apici singoli e nei commenti. Chi riceve
 l'heredoc si legge come lo legge la shell, virgolette comprese: se la riga non si
 capisce, il corpo resta analizzato. Uno che alimenta una shell (`bash <<EOF`)
