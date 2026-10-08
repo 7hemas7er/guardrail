@@ -1053,6 +1053,7 @@ SHELL_WRITER_CMDS = frozenset(
 #   inplace  solo se c'è il flag di modifica sul posto (sed -i, perl -pi)
 #   of       solo l'operando of= (dd)
 #   opaque   non ispezionabile da fuori (python, node): tutti, per prudenza
+CODICE_INLINE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
 WRITER_TARGETS = {
     "tee": "all", "rm": "all", "rmdir": "all", "shred": "all", "truncate": "all",
     "mkdir": "all", "touch": "all", "chmod": "all", "chown": "all", "chattr": "all",
@@ -1208,6 +1209,20 @@ def shell_tokens(segment: str) -> list[str]:
         return cleaned.split()
 
 
+def dati_di_plugin(arg: str) -> bool:
+    """`arg` è un path pulito che porta davvero dentro `~/.claude/plugins/data/`: niente
+    `..`, virgolette o caratteri di shell, e con i link risolti resta lì sotto. Un
+    argomento che solo *contiene* quel pezzo di path non basta."""
+    if arg.startswith("-") or any(c in arg for c in "'\"();`$|&<>*?[]{}\\\n") or ".." in arg.split("/"):
+        return False
+    try:
+        base = (Path.home() / ".claude" / "plugins" / "data").resolve()
+        reale = Path(os.path.expanduser(arg)).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return reale != base and is_inside(reale, base)
+
+
 def write_targets(comando: Comando) -> list[str]:
     """Gli operandi su cui il comando *scrive*. Un comando di lettura non ne ha."""
     targets = list(comando.uscite)
@@ -1224,6 +1239,13 @@ def write_targets(comando: Comando) -> list[str]:
         return targets
     if mode == "last" and not any(f in ("-t", "--target-directory") for f in flags):
         operands = operands[-1:]
+    if mode == "opaque":
+        # Uno script che riceve il path di un log di plugin lo legge: `.claude/plugins/data/`
+        # sono i dati dei plugin (log, stato), non il loro codice. Falso positivo del
+        # 2026-10-07: `node join.ts ~/.claude/plugins/data/…/log.jsonl` negato come
+        # modifica dei plugin. Chi ci scrive davvero (tee, cp, rm, sed -i, `>`) resta visto.
+        if not any(f in CODICE_INLINE_FLAGS or re.fullmatch(r"-[a-zA-Z]*[ce]", f) for f in flags):
+            operands = [a for a in operands if not dati_di_plugin(a)]
     return targets + operands
 
 
