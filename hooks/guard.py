@@ -1066,8 +1066,11 @@ WRITER_TARGETS = {
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
 # Codice (Python, JavaScript) che scrive, cancella o sposta file. Largo di
 # proposito: un falso allarme qui riporta solo al comportamento prudente di prima.
+# `dumps(` resta fuori: `json.dumps`, `pickle.dumps`, `yaml.dump` senza stream
+# producono una stringa, non toccano file. Il 2026-10-17 un `print(json.dumps(d))`
+# su un file dei plugin solo letto veniva negato come scrittura.
 CODE_WRITES = re.compile(
-    r"\b(?:write\w*|append\w*|dump\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
+    r"\b(?:write\w*|append\w*|dump(?!s\s*\()\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
     r"|symlink\w*|link\w*|mkdir\w*|makedirs|truncate\w*|chmod\w*|chown\w*|utime\w*|touch|replace|extract\w*"
     r"|urlretrieve|createWriteStream)\s*\("
     r"|\bopen\w*\s*\([^\n]*?['\"][rbt]*[wax+][rwabxt+]*['\"]"
@@ -1094,9 +1097,9 @@ CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
 SHELL_PUNCTUATION = frozenset("();<>|&")
 
 
-def ultimo_segmento(testo: str) -> str | None:
-    """Il testo dopo l'ultimo separatore *vero*: `;`, `|`, `&`, `(`, `)` o a capo
-    fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
+def segmenti_veri(testo: str) -> list[str] | None:
+    """I segmenti di `testo` divisi dai separatori *veri*: `;`, `|`, `&`, `(`, `)` o a
+    capo fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
     escapata (`";"`, `\\>`) diventa `_`, perché nessuno la scambi dopo per un
     operatore: shlex in modo posix toglie le virgolette, e `";"` tornerebbe `;`.
 
@@ -1104,8 +1107,9 @@ def ultimo_segmento(testo: str) -> str | None:
     compreso: `bash -s \\` a capo `python3` è un comando solo, bash. Un `#` a
     inizio parola apre un commento fino a capo, e lì niente è un operatore.
     None se `testo` finisce dentro una stringa, un escape o un commento: chi
-    chiede del comando finale di una riga che non si chiude non sa niente.
+    chiede dei comandi di una riga che non si chiude non sa niente.
     """
+    segmenti: list[str] = []
     corrente: list[str] = []
     stato = ""  # "" fuori, "'" o '"' dentro una stringa, "#" in un commento
     i, n = 0, len(testo)
@@ -1114,6 +1118,7 @@ def ultimo_segmento(testo: str) -> str | None:
         c = testo[i]
         if stato == "#":
             if c == "\n":
+                segmenti.append("".join(corrente))
                 stato, corrente = "", []
             i += 1
             continue
@@ -1150,13 +1155,20 @@ def ultimo_segmento(testo: str) -> str | None:
         elif c == "#" and (not corrente or corrente[-1] in " \t"):
             stato = "#"
         elif c in ";|&()\n":
+            segmenti.append("".join(corrente))
             corrente = []
         else:
             corrente.append(c)
         i += 1
     if stato:
         return None
-    return "".join(corrente)
+    return segmenti + ["".join(corrente)]
+
+
+def ultimo_segmento(testo: str) -> str | None:
+    """Il testo dopo l'ultimo separatore vero (vedi segmenti_veri)."""
+    segmenti = segmenti_veri(testo)
+    return None if segmenti is None else segmenti[-1]
 
 
 def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
@@ -1483,6 +1495,13 @@ def giudica_codice_inline(text: str) -> str:
 
 
 def check_protected_writes(text: str, cwd: str = "") -> None:
+    """Scritture e rimozioni dei file che governano guardrail e Claude Code.
+
+    I comandi li trova `comandi`, che legge il testo come la shell: in
+    `tee "; x" .guardrail.json` il `;` fra virgolette non è un separatore, e la
+    scrittura di tee resta visibile (caso del 2026-10-08, che su main era coperto
+    da una seconda serie di segmenti, `segmenti_veri`).
+    """
     text = giudica_codice_inline(text)
     for comando in comandi(text):
         tolto = None
