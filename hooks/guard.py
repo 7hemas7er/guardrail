@@ -490,8 +490,11 @@ def senza_prefissi(tokens: list[str]) -> list[str]:
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
 # Codice (Python, JavaScript) che scrive, cancella o sposta file. Largo di
 # proposito: un falso allarme qui riporta solo al comportamento prudente di prima.
+# `dumps(` resta fuori: `json.dumps`, `pickle.dumps`, `yaml.dump` senza stream
+# producono una stringa, non toccano file. Il 2026-10-17 un `print(json.dumps(d))`
+# su un file dei plugin solo letto veniva negato come scrittura.
 CODE_WRITES = re.compile(
-    r"\b(?:write\w*|append\w*|dump\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
+    r"\b(?:write\w*|append\w*|dump(?!s\s*\()\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
     r"|symlink\w*|link\w*|mkdir\w*|makedirs|truncate\w*|chmod\w*|chown\w*|utime\w*|touch|replace|extract\w*"
     r"|urlretrieve|createWriteStream)\s*\("
     r"|\bopen\w*\s*\([^\n]*?['\"][rbt]*[wax+][rwabxt+]*['\"]"

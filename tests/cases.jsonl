@@ -416,3 +416,6 @@
 {"name": "; nell'espressione di sed -i: la modifica di .guardrail.json resta", "tool_name": "Bash", "tool_input": {"command": "sed -i \"s/a;b/c/\" .guardrail.json"}, "expect": "ask"}
 {"name": "tee citato nel pattern di grep su .guardrail.json: è una lettura", "tool_name": "Bash", "tool_input": {"command": "grep \"; tee\" .guardrail.json"}, "expect": "allow"}
 {"name": "cp e tee citati in una stringa di echo: nessuna scrittura", "tool_name": "Bash", "tool_input": {"command": "echo \"cp (x) e tee; .guardrail.json sono esempi\""}, "expect": "allow"}
+{"name": "python -c che legge un file dei plugin e lo stampa con json.dumps: dumps non scrive", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;d=json.load(open('/home/master/.claude/plugins/installed_plugins.json'));print(json.dumps(d))\""}, "expect": "allow"}
+{"name": "python -c che legge .guardrail.json e lo stampa con json.dumps: lettura", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;print(json.dumps(json.load(open('.guardrail.json'))))\""}, "expect": "allow"}
+{"name": "python -c con json.dump su .guardrail.json aperto in scrittura: conferma", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;json.dump({}, open('.guardrail.json','w'))\""}, "expect": "ask"}
