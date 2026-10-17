@@ -550,7 +550,21 @@ class _Lettore:
         self.pezzi: list[str] = []
         self.in_parola = False
         self.attesa: str | None = None  # la redirezione che aspetta il suo bersaglio
-        self.heredoc: list[tuple[str, bool]] = []  # (tag, fra virgolette) degli heredoc aperti sulla riga
+        # Gli heredoc aperti sulla riga: tag, tag fra virgolette, indice in `trovati` del
+        # comando che porta il `<<` (il corpo va a lui, non all'ultimo della riga), e se
+        # quel comando finisce in una pipe (`cat <<'EOF' | sh`: il corpo arriva a sh).
+        self.heredoc: list[list] = []
+        # Ogni comando della riga ha un numero dal momento in cui comincia, anche se
+        # poi non entra in `trovati` (nessuna parola): `indice_di` dice dove è finito.
+        self.n_comandi = 0
+        self.indice_di: dict[int, int] = {}
+        # Una pipe o una process substitution vista sulla riga, in qualunque posizione
+        # (`cat > >(sh) <<'EOF'`: il `>(` viene prima dell'heredoc), e la profondità
+        # di `( … )` e `{ … }`: un heredoc aperto dentro un gruppo può finire in una
+        # pipe su una riga successiva, dopo la `)`. In tutti e due i casi il corpo
+        # resta analizzato.
+        self.pipe_sulla_riga = False
+        self.profondita_gruppo = 0
         self.inizio = 0
         self.riga_da = 0  # quanti comandi erano già in `trovati` quando la riga è cominciata
 
@@ -569,13 +583,17 @@ class _Lettore:
         operatore, self.attesa = self.attesa, None
         if operatore is None:
             self.parole.append(parola)
+            if not citata and parola in ("{", "}") and not self.parole[:-1]:
+                # `{ … }` come gruppo: conta come una parentesi (vedi profondita_gruppo).
+                self.profondita_gruppo += 1 if parola == "{" else -1
+                self.profondita_gruppo = max(0, self.profondita_gruppo)
         elif ">" in operatore:
             if not (operatore.endswith("&") and FD_DUPLICATO.fullmatch(parola)):
                 self.uscite.append(parola)
         elif operatore == "<":
             self.entrate.append(parola)
         elif operatore in ("<<", "<<-"):
-            self.heredoc.append((parola, citata))
+            self.heredoc.append([parola, citata, self.n_comandi, False])
         # `<<<` e `<&`: una stringa o un descrittore, non un file
 
     def chiudi_comando(self, fine: int) -> None:
@@ -584,21 +602,55 @@ class _Lettore:
             self.trovati.append(
                 Comando(tuple(self.parole), tuple(self.uscite), tuple(self.entrate), self.testo[self.inizio:fine].strip())
             )
+            self.indice_di[self.n_comandi] = len(self.trovati) - 1
+        self.n_comandi += 1
         self.parole, self.uscite, self.entrate = [], [], []
         self.attesa = None
         self.inizio = fine + 1
 
-    def corpi_heredoc(self, pos: int, di_dati: bool) -> int:
+    def corpi_heredoc(self, pos: int) -> int:
         """Il corpo degli heredoc aperti sulla riga che finisce, da `pos` fino al tag.
         Ogni riga si legge da sola, senza il contesto di virgolette delle altre: il
         corpo non è sintassi di shell (un `'` in un testo non apre niente), ma può
         essere codice che una shell riceve, e una riga che comincia con `rm` va vista."""
         t = self.testo
-        for tag, citato in self.heredoc:
+        for tag, citato, numero, in_pipe in self.heredoc:
+            # Chi riceve il corpo: il comando che porta il `<<`, se non lo passa a
+            # un altro con una pipe. `cd docs && python3 - <<'PY'` lo riceve python3;
+            # un `<<` senza comando non lo riceve nessuno, e il corpo resta analizzato.
+            # Con una pipe o un `>(` in qualunque punto della riga, o dentro un gruppo
+            # ancora aperto, il ricevente non è certo: prudente, nessuno.
+            in_pipe = in_pipe or self.pipe_sulla_riga or self.profondita_gruppo > 0
+            indice = self.indice_di.get(numero)
+            ricevente = comando_effettivo(self.trovati[indice].parole) if indice is not None and not in_pipe else None
             # Con il tag fra virgolette la shell non espande il corpo, ma chi lo riceve
             # può eseguirlo. È testo solo se lo riceve un comando che archivia dati
             # (`riceve_dati`); per chiunque altro il corpo resta analizzato.
-            letterale = citato and di_dati
+            letterale = citato and ricevente is not None and riceve_dati(ricevente)
+            # Codice di un interprete senza shell (`python3 - <<'PY'`): un `rm -rf ~`
+            # in una stringa Python non lo esegue nessuno. Il corpo si salta, a meno
+            # che il codice lanci processi: allora lo legge check_codice_negli_heredoc.
+            # Prima lo faceva strip_inert_heredocs sul testo; dal 2026-10-17 il lettore
+            # riceve il comando com'è, e la regola vive qui.
+            if (
+                citato
+                and ricevente is not None
+                and not ricevente.lanciatori
+                and INTERPRETERS_WITHOUT_SHELL.fullmatch(ricevente.nome) is not None
+            ):
+                corpo, dopo = self._corpo_heredoc(pos, tag)
+                # Il corpo si salta in due casi: è il programma (`python3 -`, `node`
+                # senza script) e non lancia processi; oppure è l'input di un codice
+                # inline (`-c`, `-e`) che non legge lo stdin e non lancia processi.
+                # Con uno script da file (`python3 app.py <<'EOF'`) il corpo è un
+                # input di cui non si sa nulla, e resta analizzato.
+                modo = modo_interprete(ricevente.args)
+                codice = " ".join(ricevente.args)
+                if not SPAWNS_PROCESS.search(corpo) and (
+                    modo == "stdin" or (modo == "inline" and not SPAWNS_PROCESS.search(codice) and not STDIN_LETTO.search(codice))
+                ):
+                    pos = dopo
+                    continue
             while pos < len(t):
                 fine = t.find("\n", pos)
                 fine = len(t) if fine < 0 else fine
@@ -612,7 +664,26 @@ class _Lettore:
                     # non aprono comandi), ma una riga che *comincia* con un comando si vede.
                     self.trovati.append(Comando(tuple(riga.split()), (), (), riga.strip()))
         self.heredoc.clear()
+        self.pipe_sulla_riga = False
         return min(pos, len(t))
+
+    def heredoc_in_pipe(self) -> None:
+        self.pipe_sulla_riga = True
+        for apertura in self.heredoc:
+            apertura[3] = True
+
+    def _corpo_heredoc(self, pos: int, tag: str) -> tuple[str, int]:
+        """Il corpo dell'heredoc che comincia in `pos`, e l'indice dopo la riga del tag."""
+        t = self.testo
+        righe: list[str] = []
+        while pos < len(t):
+            fine = t.find("\n", pos)
+            fine = len(t) if fine < 0 else fine
+            riga, pos = t[pos:fine], fine + 1
+            if riga.strip() == tag:
+                break
+            righe.append(riga)
+        return "\n".join(righe), min(pos, len(t))
 
     def sostituzione(self, i: int, apre: int) -> int:
         """`$(…)`, `<(…)`, `>(…)` che comincia in `i`: la parola lo contiene, i suoi
@@ -641,6 +712,8 @@ class _Lettore:
         substitution o, per `&` da solo, un separatore."""
         t = self.testo
         if t[i] in "<>" and t.startswith("(", i + 1) and (k := self.sostituzione(i, 2)) >= 0:
+            # `cat <<'EOF' > >(sh)`: il corpo arriva a un'altra shell.
+            self.heredoc_in_pipe()
             return k
         m = REDIREZIONE.match(t, i)
         if m is None:
@@ -667,15 +740,10 @@ class _Lettore:
                 i += 1
             elif c == "\n":
                 self.chiudi_parola()
-                # Un solo comando sulla riga, e che archivia dati: con `;`, `|` o `&&` il
-                # corpo potrebbe andare a un altro, e allora resta analizzato.
-                di_dati = (
-                    bool(self.heredoc) and len(self.trovati) == self.riga_da and riceve_dati(comando_effettivo(self.parole))
-                )
                 self.chiudi_comando(i)
                 i += 1
                 if self.heredoc:
-                    i = self.corpi_heredoc(i, di_dati)
+                    i = self.corpi_heredoc(i)
                     self.inizio = i
                 self.riga_da = len(self.trovati)
             elif c == "\\":
@@ -721,9 +789,32 @@ class _Lettore:
                 i = self.redirezione(i)
             else:  # ; | ( )
                 self.chiudi_comando(i)
+                if c == "(":
+                    self.profondita_gruppo += 1
+                elif c == ")":
+                    self.profondita_gruppo = max(0, self.profondita_gruppo - 1)
+                if c == "|" and not t.startswith("|", i + 1) and (i == 0 or t[i - 1] != "|"):
+                    # Una pipe più avanti sulla riga: il corpo di ogni heredoc aperto può
+                    # arrivare al comando dopo, anche da dentro `( … )` o `{ … }`
+                    # (`(cat <<'EOF'; echo) | sh`). Prudente: tutti valgono in pipe.
+                    self.heredoc_in_pipe()
                 i += 1
         self.chiudi_comando(n)
         return self.trovati
+
+
+def modo_interprete(args: tuple[str, ...] | list[str]) -> str | None:
+    """Da dove l'interprete prende il programma: "stdin" (`python3 -`, `node` senza
+    script), "inline" (`python3 -c '…'`, `node -e '…'`), None con uno script da file.
+    Le opzioni si guardano solo prima del primo operando."""
+    for a in args:
+        if a == "-":
+            return "stdin"
+        if a == "-c" or a == "-e" or re.match(r"^-[a-zA-Z]*[ce]$", a):
+            return "inline"
+        if not a.startswith("-"):
+            return None
+    return "stdin"
 
 
 def _leggi(testo: str, prof: int) -> list[Comando]:
@@ -1095,6 +1186,78 @@ INLINE_CODE = re.compile(
 )
 CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
 SHELL_PUNCTUATION = frozenset("();<>|&")
+
+
+def unisci_continuazioni(testo: str) -> str:
+    """Il testo con le continuazioni di riga unite: un `\\` davanti all'a capo, fuori
+    da apici singoli e commenti, sparisce con l'a capo (anche fra doppi apici, come
+    in bash). Un `\\\\` davanti all'a capo è un backslash escapato e l'a capo resta,
+    come resta dentro un commento: `echo a \\\\` a capo `rm x` sono due comandi.
+    Serve alle regole scritte come regex sul testo; il lettore (`comandi`) legge
+    le continuazioni da sé. Caso del 2026-10-17: `re.sub(r"\\\\\\n", " ")` univa
+    tutto, e `echo a #\\` a capo `rm .guardrail.json` passava senza controllo.
+    """
+    if "\\\n" not in testo:
+        return testo
+    if "<<" in testo:
+        # Un apostrofo nel corpo di un heredoc (`it's`) sbilancerebbe le virgolette
+        # per tutto il resto del testo. Le regole a regex, le sole a usare questo
+        # testo, tornano all'unione di prima: prudente, e uguale a ieri.
+        return re.sub(r"\\\n", " ", testo)
+    fuori: list[str] = []
+    stato = ""  # "" fuori, "'", '"' o "$'" dentro una stringa, "#" in un commento
+    i, n = 0, len(testo)
+    while i < n:
+        c = testo[i]
+        if stato == "#":
+            if c == "\n":
+                stato = ""
+            fuori.append(c)
+        elif stato == "'":
+            if c == "'":
+                stato = ""
+            fuori.append(c)
+        elif stato == "$'":
+            # Dentro `$'…'` un backslash fa escape anche dell'apice.
+            if c == "\\":
+                fuori.append(testo[i:i + 2])
+                i += 2
+                continue
+            if c == "'":
+                stato = ""
+            fuori.append(c)
+        elif stato == "" and c == "$" and testo.startswith("'", i + 1):
+            stato = "$'"
+            fuori.append("$'")
+            i += 2
+            continue
+        elif c == "\\":
+            if i + 1 < n and testo[i + 1] == "\n":
+                i += 2
+                continue
+            fuori.append(testo[i:i + 2])
+            i += 2
+            continue
+        elif stato == '"':
+            if c == '"':
+                stato = ""
+            fuori.append(c)
+        elif c in "'\"":
+            stato = c
+            fuori.append(c)
+        elif c == "#" and (not fuori or fuori[-1][-1] in " \t\n;|&()<>"):
+            # `#` apre un commento quando comincia una parola: dopo uno spazio, un
+            # separatore o un operatore (`(echo a)#x`, `echo a >#x`), come in bash.
+            stato = "#"
+            fuori.append(c)
+        else:
+            fuori.append(c)
+        i += 1
+    if stato in ("'", '"', "$'"):
+        # Lettura incerta (un apostrofo in un heredoc, una virgoletta spaiata): per
+        # le regole a regex l'esito prudente è unire tutto, come prima.
+        return re.sub(r"\\\n", " ", testo)
+    return "".join(fuori)
 
 
 def segmenti_veri(testo: str) -> list[str] | None:
@@ -1497,10 +1660,10 @@ def giudica_codice_inline(text: str) -> str:
 def check_protected_writes(text: str, cwd: str = "") -> None:
     """Scritture e rimozioni dei file che governano guardrail e Claude Code.
 
-    I comandi li trova `comandi`, che legge il testo come la shell: in
+    I comandi li trova `comandi`, il lettore, che legge il testo come la shell:
+    virgolette, backtick, `$( )`, heredoc e continuazioni di riga. In
     `tee "; x" .guardrail.json` il `;` fra virgolette non è un separatore, e la
-    scrittura di tee resta visibile (caso del 2026-10-08, che su main era coperto
-    da una seconda serie di segmenti, `segmenti_veri`).
+    scrittura di tee resta visibile (caso del 2026-10-08).
     """
     text = giudica_codice_inline(text)
     for comando in comandi(text):
@@ -2297,7 +2460,11 @@ def check_inline_shell(text: str, config: dict, cwd: str, depth: int) -> None:
 
 
 def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
-    text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
+    # Le regole scritte come regex leggono un testo pre-trattato (continuazioni
+    # unite, corpi degli heredoc di dati tolti, backtick riscritti). Quelle che
+    # passano dal lettore (`comandi`) ricevono il comando com'è: il lettore legge
+    # virgolette, heredoc e continuazioni da sé, e un testo già cambiato lo ingannerebbe.
+    text = strip_data_heredocs(unisci_continuazioni(cmd))
     check_codice_negli_heredoc(text, config, cwd, depth)
     # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
     # un interprete: là dentro un path è citato, non eseguito. Le regole built-in
@@ -2311,13 +2478,13 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     if (pattern := matches_any(config["deny_commands"], testo_progetto)):
         deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
 
-    check_inline_shell(text, config, cwd, depth)
+    check_inline_shell(cmd, config, cwd, depth)
     # Prima di check_rm: un `find -exec sudo rm` lì sarebbe solo una conferma.
-    if any(e.nome == "rm" and e.con_privilegi for e in effettivi_e_find(text)):
+    if any(e.nome == "rm" and e.con_privilegi for e in effettivi_e_find(cmd)):
         deny("sudo/doas rm: cancellazioni con privilegi non passano dall'agente.")
-    check_rm(text)
-    check_secret_reads(text)
-    check_protected_writes(text, cwd)
+    check_rm(cmd)
+    check_secret_reads(cmd)
+    check_protected_writes(cmd, cwd)
 
     # Distruzione di sistema o supply chain
     if re.search(r"\b(mkfs(\.\w+)?|dd\s+[^|;]*of=/dev/|wsl(\.exe)?\s+--unregister)\b", text):
@@ -2881,7 +3048,9 @@ def _check_write_guardrail(path: Path) -> None:
 def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
     """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
     .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
-    text = backtick_in_sostituzioni(strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd))))
+    # Niente pre-trattamento: ogni controllo qui passa dal lettore, che legge
+    # continuazioni, heredoc e backtick da sé (vedi check_bash).
+    text = cmd
     check_protected_writes(text, cwd)
     if depth >= MAX_DEPTH:
         return
