@@ -1,26 +1,26 @@
 ---
 name: guardrail
-description: Regole aziendali per servizio (database, deploy e infrastruttura, filesystem/shell/segreti, git/GitHub/dati personali). Caricare PRIMA di eseguire SQL, migration, seed, deploy, sincronizzazioni con --delete, rm ricorsivi, pulizie di file temporanei, push, chiusura di issue, o di toccare dati di persone. Triggers on: prod, produzione, database, migrate, seed, deploy, promote, rollback, lftp, rsync, rm -rf, pulizia, cleanup, .env, segreti, credenziali, force push, GDPR, GPS, dati personali.
+description: Company rules by service (database, deploy and infrastructure, filesystem/shell/secrets, git/GitHub/personal data). Load BEFORE running SQL, migrations, seeds, deploys, syncs with --delete, recursive rm, temp-file cleanups, pushes, closing issues, or touching people's data. Triggers on: prod, production, database, migrate, seed, deploy, promote, rollback, lftp, rsync, rm -rf, cleanup, .env, secrets, credentials, force push, GDPR, GPS, personal data.
 ---
 
-# Guardrail — regole per servizio
+# Guardrail — rules by service
 
-Le regole essenziali sono già nel contesto (iniettate a inizio sessione). Qui
-carichi quelle del servizio che stai per toccare. I file stanno nella cartella
-`services/` due livelli sopra questa skill.
+The core rules are already in the context (injected at session start). Here you
+load the ones for the service you are about to touch. The files live in the
+`services/` folder two levels above this skill.
 
-1. Individua il servizio: database, deploy e infrastruttura, filesystem/shell/
-   segreti, git/GitHub/dati personali. Se il compito ne tocca più d'uno, leggili
-   tutti.
-2. Leggi il file corrispondente:
+1. Identify the service: database, deploy and infrastructure, filesystem/shell/
+   secrets, git/GitHub/personal data. If the task touches more than one, read
+   them all.
+2. Read the matching file:
    - `../../services/database.md`
-   - `../../services/deploy-infrastruttura.md`
-   - `../../services/filesystem-shell-segreti.md`
-   - `../../services/git-github-dati-personali.md`
-3. Se il repo ha `.guardrail.json`, leggilo: dice quali server e host sono
-   produzione per questo progetto.
-4. Prima dell'azione irreversibile, scrivi all'utente in una riga: cosa stai per
-   fare, su quale ambiente, e come lo hai verificato (dry-run, conteggio, ls).
-   Poi agisci, o fermati se la regola lo richiede.
-5. Se un hook ti blocca: non cercare un comando equivalente. Riporta il motivo
-   del blocco all'utente e lascia a lui la decisione.
+   - `../../services/deploy-infrastructure.md`
+   - `../../services/filesystem-shell-secrets.md`
+   - `../../services/git-github-personal-data.md`
+3. If the repo has a `.guardrail.json`, read it: it says which servers and hosts
+   are production for this project.
+4. Before the irreversible action, write to the user in one line: what you are
+   about to do, on which environment, and how you verified it (dry-run, count,
+   ls). Then act, or stop if the rule requires it.
+5. If a hook blocks you: do not look for an equivalent command. Report the
+   reason for the block to the user and leave the decision to them.

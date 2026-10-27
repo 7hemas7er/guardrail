@@ -1,91 +1,92 @@
 ---
-description: Verifica che guardrail sia davvero attivo — lancia comandi innocui che il hook deve bloccare e riporta l'esito
+description: Checks that guardrail is really active — runs harmless commands the hook must block and reports the outcome
 ---
 
-# Guardrail è acceso?
+# Is guardrail on?
 
-Un hook che non parte non fa rumore: nessun blocco, nessun errore, nessuna
-protezione. Questo comando lo mette alla prova con tre azioni **innocue** che il
-hook deve fermare. Se passano, guardrail non sta girando.
+A hook that does not start makes no noise: no block, no error, no protection.
+This command puts it to the test with three **harmless** actions the hook must
+stop. If they go through, guardrail is not running.
 
-Esegui i passi nell'ordine, uno per volta, e annota cosa succede a ciascuno.
+Run the steps in order, one at a time, and note what happens at each.
 
-## 0. Guardrail è acceso in questo progetto?
+## 0. Is guardrail on in this project?
 
-Guardrail controlla solo i progetti che l'hanno scelto: quelli con un
-`.guardrail.json` nella root o in una directory superiore, esclusa la home (lì
-stanno le liste comuni, che da sole non accendono niente). Cercalo:
+Guardrail checks only the projects that opted in: those with a `.guardrail.json`
+in the root or in a parent directory, excluding the home (that is where the
+shared lists live, and by themselves they turn nothing on). Look for it:
 
 ```
 d=$PWD; while :; do [ "$d" != "$HOME" ] && [ -f "$d/.guardrail.json" ] && echo "$d/.guardrail.json"; [ "$d" = / ] && break; d=$(dirname "$d"); done
 ```
 
-Se non trova niente, guardrail qui è **spento per scelta**, non guasto: i
-canarini passerebbero tutti. Non lanciarli. Dillo in testa al messaggio, indica
-`/guardrail:setup` per accenderlo e salta al passo 4.
+If it finds nothing, guardrail here is **off by choice**, not broken: the
+canaries would all go through. Do not run them. Say so at the top of the
+message, point to `/guardrail:setup` to turn it on and skip to step 4.
 
-## 1. Canarino sulla shell
+## 1. Shell canary
 
-Lancia esattamente questo comando Bash:
+Run exactly this Bash command:
 
 ```
 rm -rf "$GUARDRAIL_CANARY"
 ```
 
-La variabile non esiste: anche se il comando venisse eseguito, `rm` riceverebbe
-una stringa vuota e fallirebbe senza toccare nulla. Il hook però deve bloccarlo
-**prima**, perché un `rm -rf` su una variabile è vietato dalla regola 2.
+The variable does not exist: even if the command were executed, `rm` would
+receive an empty string and fail without touching anything. The hook, though,
+must block it **before**, because an `rm -rf` on a variable is forbidden by
+rule 2.
 
-- Bloccato con un messaggio `[guardrail] rm ricorsivo su un bersaglio non sicuro` → **attivo**.
-- Eseguito (anche con errore di `rm`) → **hook non attivo**.
+- Blocked with a `[guardrail]` message about a recursive `rm` on an unsafe target → **active**.
+- Executed (even with an `rm` error) → **hook not active**.
 
-## 2. Canarino sulla lettura di segreti
+## 2. Secrets-read canary
 
-Prova a leggere con il tool `Read` il file `guardrail-canary.pem` nella root del
-progetto. Il file non esiste e non deve esistere: il hook deve rifiutare la
-lettura per il nome, prima ancora di cercarlo.
+Try to read, with the `Read` tool, the file `guardrail-canary.pem` in the project
+root. The file does not exist and must not exist: the hook must refuse the read
+because of the name, before even looking for it.
 
-Non usare `.env.canary`: sulle macchine con le `permissions.deny` consigliate
-lo ferma Claude Code stesso, prima del hook, e l'esito non dice nulla sul hook.
-Un `.pem` è coperto solo dal hook, quindi il risultato è univoco.
+Do not use `.env.canary`: on machines with the recommended `permissions.deny`
+Claude Code itself stops it, before the hook, and the outcome says nothing about
+the hook. A `.pem` is covered only by the hook, so the result is unambiguous.
 
-- Bloccato con `[guardrail] lettura di un file di segreti` → **attivo**.
-- Errore "file non trovato" → **il hook non presidia `Read`**: il matcher in
-  `hooks.json` non lo include, o il plugin installato è precedente alla 0.2.0.
+- Blocked with a `[guardrail]` message about reading a secrets file → **active**.
+- "File not found" error → **the hook does not guard `Read`**: the matcher in
+  `hooks.json` does not include it, or the installed plugin predates 0.2.0.
 
-## 3. Canarino sul tool MCP (solo se c'è un server MCP configurato)
+## 3. MCP tool canary (only if an MCP server is configured)
 
-Se nel progetto c'è un server MCP di tipo SQL, lancia una query di lettura
-innocua seguita da una scrittura che non può riuscire, ad esempio:
+If the project has an MCP server of the SQL kind, run a harmless read query
+followed by a write that cannot succeed, for example:
 
 ```
-SELECT 1; DELETE FROM tabella_che_non_esiste WHERE 1 = 0
+SELECT 1; DELETE FROM table_that_does_not_exist WHERE 1 = 0
 ```
 
-- Bloccato dal hook prima dell'esecuzione → **attivo**.
-- Arriva al server (con un errore SQL) → **le query MCP non sono presidiate**.
+- Blocked by the hook before execution → **active**.
+- Reaches the server (with a SQL error) → **MCP queries are not guarded**.
 
-Se non ci sono server MCP, salta il passo e dillo.
+If there are no MCP servers, skip the step and say so.
 
-## 4. Stato dell'ambiente
+## 4. Environment state
 
-Riporta anche, senza modificarli:
+Also report, without changing them:
 
-- la versione del plugin installata (`/plugin` → guardrail);
-- se `~/.claude/settings.json` ha `"sandbox": {"enabled": true}`;
-- se la variabile `GUARDRAIL_DISABLE` è impostata nell'ambiente (`printenv GUARDRAIL_DISABLE`);
-- se nella root del progetto c'è `.guardrail.json` e, se sì, se contiene
-  `allow_commands` non vuoto (è l'eccezione che disattiva le regole: va
-  motivata nel commit che l'ha introdotta).
+- the installed plugin version (`/plugin` → guardrail);
+- whether `~/.claude/settings.json` has `"sandbox": {"enabled": true}`;
+- whether the `GUARDRAIL_DISABLE` variable is set in the environment (`printenv GUARDRAIL_DISABLE`);
+- whether the project root has a `.guardrail.json` and, if so, whether it
+  contains a non-empty `allow_commands` (it is the exception that switches the
+  rules off: it must be justified in the commit that introduced it).
 
-## 5. Esito
+## 5. Outcome
 
-Una tabella a cinque righe — progetto, shell, Read, MCP, ambiente — con
-**attivo** / **non attivo** / **saltato** e una riga di spiegazione. Se anche un solo
-canarino è passato, dillo in testa al messaggio, prima della tabella: chi legge
-deve saperlo subito.
+A five-line table — project, shell, Read, MCP, environment — with
+**active** / **not active** / **skipped** and one line of explanation. If even a
+single canary went through, say so at the top of the message, before the table:
+whoever reads it must know right away.
 
-Non cercare di "aggiustare" un hook che non parte: riporta, e l'utente decide.
-Le cause tipiche sono il plugin non installato in questa macchina, `bash` o
-`python3` assenti dal PATH (su Windows), o la sessione avviata prima
-dell'installazione e mai riavviata.
+Do not try to "fix" a hook that does not start: report, and the user decides.
+The typical causes are the plugin not installed on this machine, `bash` or
+`python3` missing from the PATH (on Windows), or the session started before the
+installation and never restarted.

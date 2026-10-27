@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "7hemas7er-guardrail",
-  "description": "Marketplace dell'organizzazione: regole e hook di sicurezza per gli agenti di sviluppo",
+  "description": "Organization marketplace: safety rules and hooks for coding agents",
   "owner": {
     "name": "7hemas7er"
   },
   "plugins": [
     {
       "name": "guardrail",
-      "description": "Regole aziendali per gli agenti: hook che bloccano comandi distruttivi, deploy con cancellazione e SQL di scrittura in produzione; regole essenziali a ogni sessione; regole per servizio via skill.",
+      "description": "Company rules for coding agents: hooks that block destructive commands, deploys that delete and write SQL in production; core rules at every session; per-service rules via skill.",
       "version": "0.10.1",
       "category": "security",
       "source": "./"

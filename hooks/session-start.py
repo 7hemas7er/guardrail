@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Hook SessionStart: inietta nel contesto dell'agente le regole essenziali.
+"""SessionStart hook: injects the core rules into the agent's context.
 
-Guardrail vale solo nei progetti che l'hanno scelto, con un `.guardrail.json` (vedi
-`guard.attivo`). Lì stampa su stdout RULES-CORE.md (breve, ~30 righe): Claude Code
-aggiunge lo stdout dei hook SessionStart al contesto della sessione. Le regole
-complete per servizio stanno in services/ e si caricano con la skill `guardrail`.
+Guardrail applies only in the projects that chose it, with a `.guardrail.json` (see
+`guard.is_active`). There it prints RULES-CORE.md to stdout (short, ~30 lines): Claude
+Code adds the stdout of SessionStart hooks to the session context. The full rules
+per service live in services/ and are loaded with the `guardrail` skill.
 
-Altrove non inietta niente, e la prima volta che una sessione parte in quella
-cartella chiede all'agente di domandare all'utente se attivarlo: sì con
-/guardrail:setup, sì con le regole di base, o no. La scelta è dell'utente; la
-domanda non si ripete, così una cartella lasciata spenta di
-proposito non diventa rumore.
+Elsewhere it injects nothing, and the first time a session starts in that folder it
+asks the agent to ask the user whether to turn it on: yes with /guardrail:setup, yes
+with the basic rules, or no. The choice is the user's; the question is not repeated,
+so a folder left off on purpose does not become noise.
 
-In coda, una sola volta per tipo, segnala anche quello che il hook non può fare da
-solo: il sandbox spento. Lo stato sta in ~/.claude/guardrail.state.json.
+At the end, once per kind, it also reports what the hook cannot do by itself: the
+sandbox being off. The state lives in ~/.claude/guardrail.state.json.
 """
 import json
 import os
@@ -50,106 +49,112 @@ def project_root(start: Path) -> Path:
     return start
 
 
-def progetto_attivo(cwd: Path) -> bool:
+def project_active(cwd: Path) -> bool:
     try:
         import guard
 
-        return guard.attivo(str(cwd))
-    except Exception:  # noqa: BLE001 — nel dubbio le regole entrano: costano poco
+        return guard.is_active(str(cwd))
+    except Exception:  # noqa: BLE001 — when in doubt the rules go in: they cost little
         return True
 
 
 cwd = cwd_from_stdin()
-attivo = progetto_attivo(cwd)
+active = project_active(cwd)
 
-if attivo:
+if active:
     try:
         text = (root / "RULES-CORE.md").read_text(encoding="utf-8").strip()
     except OSError:
         text = ""
     if text:
-        print("<!-- guardrail: regole essenziali, iniettate a ogni sessione -->")
+        print("<!-- guardrail: core rules, injected at every session -->")
         print(text)
-        print(f"<!-- regole complete per servizio: {root / 'services'} (skill: guardrail) -->")
+        print(f"<!-- full rules per service: {root / 'services'} (skill: guardrail) -->")
 
-# Con la mappa attiva il modello deve sapere che i segnaposto valgono come termini
-# veri, altrimenti prova a "correggerli". Si elencano solo i segnaposto. Vale anche
-# nei progetti dove guardrail è spento: il mascheramento segue la mappa.
+# With the map active the model must know that the placeholders count as real
+# terms, otherwise it tries to "correct" them. Only the placeholders are listed. It
+# applies also in projects where guardrail is off: masking follows the map.
 try:
     import mask
 
-    segnaposto = sorted({finto for _, finto in mask.load_pairs()})
-except Exception:  # noqa: BLE001 — una mappa rotta la segnala guard.py al primo tool
-    segnaposto = []
-if segnaposto:
+    placeholders = sorted({fake for _, fake in mask.load_pairs()})
+except Exception:  # noqa: BLE001 — a broken map is reported by guard.py at the first tool
+    placeholders = []
+if placeholders:
     print(
-        "\n<!-- guardrail: mascheramento dei termini riservati attivo -->\n"
-        f"Alcuni termini riservati sono mascherati: in ogni risultato di tool (comandi, file letti, "
-        f"ricerche, MCP) compaiono come {', '.join(segnaposto)}. Trattali come i termini veri e usali "
-        "così nei comandi Bash, nei percorsi, nei pattern di Grep/Glob e in Write: guardrail li "
-        "converte prima dell'esecuzione. Non cercare di ricostruire gli originali, e non guardare i "
-        "byte (od, xxd, base64) per capire perché un testo non corrisponde. Il tool Edit non "
-        "riconosce i segnaposto: per modificare un testo che ne contiene usa sed via Bash. PDF, "
-        "documenti Office e archivi non si leggono con Read: convertili via Bash (pdftotext file -, "
-        "unzip -p). Per una risorsa privata usa curl via Bash, non WebFetch."
+        "\n<!-- guardrail: masking of reserved terms active -->\n"
+        f"Some reserved terms are masked: in every tool result (commands, files read, "
+        f"searches, MCP) they appear as {', '.join(placeholders)}. Treat them as the real terms and use "
+        "them as such in Bash commands, in paths, in Grep/Glob patterns and in Write: guardrail "
+        "converts them before execution. Do not try to reconstruct the originals, and do not look at "
+        "the bytes (od, xxd, base64) to understand why a text does not match. The Edit tool does not "
+        "recognize the placeholders: to modify a text that contains them use sed via Bash. PDFs, "
+        "Office documents and archives are not read with Read: convert them via Bash (pdftotext file -, "
+        "unzip -p). For a private resource use curl via Bash, not WebFetch."
     )
-    # Il git status e i commit recenti entrano nel contesto prima di qualunque hook.
-    # Si ripete a ogni sessione finché resta così: è una fuga, non un consiglio.
-    impostazioni = read_json(Path.home() / ".claude" / "settings.json")
+    # The git status and the recent commits enter the context before any hook.
+    # Repeated at every session as long as it stays so: it is a leak, not advice.
+    settings_main = read_json(Path.home() / ".claude" / "settings.json")
     if (
         os.environ.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS") != "1"
-        and impostazioni.get("includeGitInstructions") is not False
+        and settings_main.get("includeGitInstructions") is not False
     ):
         print(
-            "\n<!-- guardrail: da segnalare all'utente nel primo messaggio -->\n"
-            "- il mascheramento è attivo, ma Claude Code mette nel contesto il git status e i commit "
-            "recenti prima di qualunque hook: nomi di file e messaggi di commit arrivano al modello "
-            'in chiaro. Si toglie con `"includeGitInstructions": false` in ~/.claude/settings.json.'
+            "\n<!-- guardrail: to report to the user in the first message -->\n"
+            "- masking is active, but Claude Code puts the git status and the recent commits "
+            "in the context before any hook: file names and commit messages reach the model "
+            'in the clear. It is removed with `"includeGitInstructions": false` in ~/.claude/settings.json.'
         )
 
 
-def avvisi(cwd: Path) -> list[tuple[str, str]]:
-    """[(chiave di stato, testo)] — solo ciò che il hook non può fare da sé."""
-    progetto = project_root(cwd)
-    if not attivo:
-        indizi = [
-            nome for nome in (".mcp.json", "docker-compose.yml", "docker-compose.yaml", "scripts/deploy")
-            if (progetto / nome).exists()
+def notices(cwd: Path) -> list[tuple[str, str]]:
+    """[(state key, text)] — only what the hook cannot do by itself."""
+    project = project_root(cwd)
+    if not active:
+        hints = [
+            name for name in (".mcp.json", "docker-compose.yml", "docker-compose.yaml", "scripts/deploy")
+            if (project / name).exists()
         ]
-        superficie = f" Qui c'è superficie di produzione: {', '.join(indizi)}." if indizi else ""
+        surface = f" There is production surface here: {', '.join(hints)}." if hints else ""
         return [(
-            f"inattivo:{progetto}",
-            f"guardrail non è attivo in questa cartella ({progetto}): manca un .guardrail.json, quindi "
-            "comandi distruttivi, scritture in produzione e letture di segreti non vengono controllati."
-            f"{superficie}\n"
-            "  PRIMA di occuparti della richiesta dell'utente, chiedigli se vuole attivarlo qui (con "
-            "AskUserQuestion, se c'è), con tre risposte: «Sì, configuralo» → esegui /guardrail:setup; "
-            "«Sì, regole di base» → crea nella root del progetto un .guardrail.json con `{}`; «No» → "
-            "non fare niente. La domanda non si ripete per questa cartella: se l'utente cambia idea, "
-            "/guardrail:setup. Decide l'utente: non rispondere al posto suo. Poi passa alla sua richiesta.",
+            f"inactive:{project}",
+            f"guardrail is not active in this folder ({project}): there is no .guardrail.json, so "
+            "destructive commands, writes to production and reads of secrets are not checked."
+            f"{surface}\n"
+            "  BEFORE dealing with the user's request, ask them whether they want to turn it on here (with "
+            "AskUserQuestion, if available), with three answers: «Yes, configure it» → run /guardrail:setup; "
+            "«Yes, basic rules» → create a .guardrail.json with `{}` in the project root; «No» → "
+            "do nothing. The question is not repeated for this folder: if the user changes their mind, "
+            "/guardrail:setup. The user decides: do not answer in their place. Then move on to their request.",
         )]
 
     settings = read_json(Path.home() / ".claude" / "settings.json")
     if not (settings.get("sandbox") or {}).get("enabled"):
         return [(
             "sandbox",
-            "il sandbox dei comandi Bash è spento in ~/.claude/settings.json "
+            "the Bash command sandbox is off in ~/.claude/settings.json "
             '(`"sandbox": {"enabled": true, "autoAllowBashIfSandboxed": true}`). '
-            "È l'unica protezione che nessun hook può attivare al posto dell'utente.",
+            "It is the only protection that no hook can turn on in the user's place.",
         )]
     return []
 
 
 try:
-    stato = read_json(STATE)
-    visti = stato.get("avvisi_mostrati") if isinstance(stato.get("avvisi_mostrati"), list) else []
-    nuovi = [(chiave, testo) for chiave, testo in avvisi(cwd) if chiave not in visti]
-    if nuovi:
-        print("\n<!-- guardrail: da segnalare all'utente nel primo messaggio, una riga per punto -->")
-        for _, testo in nuovi:
-            print(f"- {testo}")
+    state = read_json(STATE)
+    # Old state files (before the English keys) are read as well: `avvisi_mostrati`
+    # list and `inattivo:<folder>` keys count as already shown. Only the new key is written.
+    seen = [
+        key.replace("inattivo:", "inactive:", 1) if isinstance(key, str) and key.startswith("inattivo:") else key
+        for name in ("notices_shown", "avvisi_mostrati")
+        for key in (state.get(name) if isinstance(state.get(name), list) else [])
+    ]
+    new = [(key, text) for key, text in notices(cwd) if key not in seen]
+    if new:
+        print("\n<!-- guardrail: to report to the user in the first message, one line per point -->")
+        for _, text in new:
+            print(f"- {text}")
         STATE.parent.mkdir(parents=True, exist_ok=True)
-        stato["avvisi_mostrati"] = visti + [chiave for chiave, _ in nuovi]
-        STATE.write_text(json.dumps(stato, ensure_ascii=False, indent=2), encoding="utf-8")
-except Exception:  # noqa: BLE001 — un avviso non deve mai rompere l'avvio di sessione
+        state["notices_shown"] = seen + [key for key, _ in new]
+        STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+except Exception:  # noqa: BLE001 — a notice must never break the session start
     pass

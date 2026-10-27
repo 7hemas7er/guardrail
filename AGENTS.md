@@ -1,62 +1,63 @@
-# Guardrail — regole per gli agenti di sviluppo
+# Guardrail — rules for coding agents
 
-Questo repo contiene le regole che ogni agente (Claude Code, Copilot, Cursor,
-Codex, Gemini CLI) deve rispettare quando lavora sui progetti dell'organizzazione.
-Nasce da un incidente reale: l'11 settembre 2026 un subagent in modalità auto,
-incaricato di *leggere* uno script di deploy con `--delete`, ha cancellato tutti i
-file di configurazione della home dello sviluppatore. Le regole in prosa non lo
-avrebbero fermato: per questo il repo distribuisce anche hook che bloccano.
+This repo holds the rules every agent (Claude Code, Copilot, Cursor, Codex,
+Gemini CLI) must follow when working on the organization's projects. It was born
+from a real incident: on 2026-09-11 a subagent in auto mode, asked to *read* a
+deploy script that used `--delete`, deleted every configuration file in the
+developer's home directory. Rules in prose would not have stopped it: that is
+why the repo also ships hooks that block.
 
-## Come usarlo
+## How to use it
 
-- **Claude Code**: installa il plugin (vedi README), poi accendilo nei progetti
-  che vuoi proteggere: è attivo solo dove c'è un `.guardrail.json`. Lì le regole
-  essenziali entrano nel contesto a ogni sessione e i comandi pericolosi vengono
-  bloccati o messi in conferma; in una cartella senza, la prima sessione avvisa
-  che guardrail è spento. La skill `guardrail` carica le regole del servizio
-  interessato; `/guardrail:check` verifica che il hook sia attivo,
-  `/guardrail:setup` accende e configura guardrail nel repo corrente,
-  `/guardrail:log` riassume cosa è stato bloccato, `/guardrail:approve` approva
-  uno script che si lancia di continuo e ne registra l'impronta.
-- **Altri strumenti**: clona il repo accanto ai progetti e importa `AGENTS.md`
-  nel file di istruzioni del tuo strumento. Nessun blocco automatico: valgono
-  solo le regole scritte.
+- **Claude Code**: install the plugin (see README), then turn it on in the
+  projects you want to protect: it is active only where there is a
+  `.guardrail.json`. There, the core rules enter the context at every session
+  and dangerous commands are blocked or put up for confirmation; in a folder
+  without one, the first session warns that guardrail is off. The `guardrail`
+  skill loads the rules for the service at hand; `/guardrail:check` verifies
+  that the hook is active, `/guardrail:setup` turns on and configures guardrail
+  in the current repo, `/guardrail:log` summarizes what was blocked,
+  `/guardrail:approve` approves a script that is launched all the time and
+  records its fingerprint.
+- **Other tools**: clone the repo next to your projects and import `AGENTS.md`
+  into your tool's instruction file. No automatic blocking: only the written
+  rules apply.
 
-## Le regole essenziali
+## The core rules
 
-Sono in [`RULES-CORE.md`](RULES-CORE.md). Valgono sempre, in ogni repo. Leggile
-per prime.
+They are in [`RULES-CORE.md`](RULES-CORE.md). They always apply, in every repo.
+Read them first.
 
-## Regole per tipologia di servizio
+## Rules by type of service
 
-Leggi il file del servizio che stai per toccare, **prima** di agire.
+Read the file for the service you are about to touch, **before** acting.
 
-| Servizio | File | Quando leggerlo |
+| Service | File | When to read it |
 |---|---|---|
-| Database | [`services/database.md`](services/database.md) | query, migration, seed, dump, MCP SQL |
-| Deploy e infrastruttura | [`services/deploy-infrastruttura.md`](services/deploy-infrastruttura.md) | build, push immagini, promozioni, FTP, Azure, container |
-| Filesystem, shell, segreti | [`services/filesystem-shell-segreti.md`](services/filesystem-shell-segreti.md) | rm, pulizie, script con variabili, `.env`, chiavi, home |
-| Git, GitHub, dati personali | [`services/git-github-dati-personali.md`](services/git-github-dati-personali.md) | commit, push, PR, issue, anagrafiche, GPS, audit |
+| Database | [`services/database.md`](services/database.md) | queries, migrations, seeds, dumps, MCP SQL |
+| Deploy and infrastructure | [`services/deploy-infrastructure.md`](services/deploy-infrastructure.md) | builds, image pushes, promotions, FTP, Azure, containers |
+| Filesystem, shell, secrets | [`services/filesystem-shell-secrets.md`](services/filesystem-shell-secrets.md) | rm, cleanups, scripts with variables, `.env`, keys, home directory |
+| Git, GitHub, personal data | [`services/git-github-personal-data.md`](services/git-github-personal-data.md) | commits, pushes, PRs, issues, personal records, GPS, audit |
 
-## Cosa viene bloccato automaticamente (solo Claude Code)
+## What gets blocked automatically (Claude Code only)
 
-Ogni file di servizio distingue le **regole di condotta** (prosa) da ciò che il
-hook `hooks/guard.py` fa rispettare: `BLOCCO` (il tool non parte) o `CONFERMA`
-(qualcuno deve approvare). ⚠️ In modalità auto la `CONFERMA` la concede l'agente,
-non l'utente: se una decisione deve essere di un umano, la regola va scritta come
-`BLOCCO`, che è l'unico esito non scavalcabile. Il blocco non è un ostacolo
-da aggirare: se scatta, ferma il lavoro e spiega all'utente.
+Each service file separates the **rules of conduct** (prose) from what the
+`hooks/guard.py` hook enforces: `BLOCK` (the tool does not start) or `CONFIRM`
+(someone has to approve). ⚠️ In auto mode the `CONFIRM` is granted by the agent,
+not the user: if a decision must be a human's, the rule has to be written as a
+`BLOCK`, the only outcome that cannot be overridden. A block is not an obstacle
+to work around: if it fires, stop the work and explain to the user.
 
-## Configurazione per progetto
+## Per-project configuration
 
-Un file `.guardrail.json` nella root del repo accende guardrail in quel progetto
-(anche vuoto, `{}`) e dice al hook quali server MCP sono produzione, quali pattern
-identificano la produzione nei comandi e quali comandi del progetto sono vietati.
-Toglierlo spegne guardrail: lo fa l'utente, mai l'agente. Esempio in
-[`examples/esempio.guardrail.json`](examples/esempio.guardrail.json).
+A `.guardrail.json` file in the repo root turns guardrail on in that project
+(even empty, `{}`) and tells the hook which MCP servers are production, which
+patterns identify production in commands, and which project commands are
+forbidden. Removing it turns guardrail off: the user does that, never the agent.
+Example in [`examples/example.guardrail.json`](examples/example.guardrail.json).
 
-## Contribuire
+## Contributing
 
-Una regola entra qui se ha impedito, o avrebbe impedito, un danno reale. Ogni
-regola cita il caso che l'ha motivata. Le modifiche ai hook passano da
-`tests/run.py`, che deve restare verde.
+A rule gets in here if it prevented, or would have prevented, real damage. Every
+rule cites the case that motivated it. Changes to the hooks go through
+`tests/run.py`, which must stay green.

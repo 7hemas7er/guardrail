@@ -1,28 +1,28 @@
 {
-  "_commento": "Configurazione di guardrail per il repo di guardrail stesso. Qui non esistono database, deploy o ambienti: i rischi sono altri tre, e sono scritti sotto. Le liste si sommano ai default del hook, che marcano gia come produzione i comandi che contengono 'prod', 'produzione' o 'live'.",
+  "_comment": "Guardrail configuration for the guardrail repo itself. There are no databases, deploys or environments here: the risks are three others, written below. The lists add up to the hook defaults, which already mark as production the commands that contain 'prod', 'produzione' or 'live'.",
 
-  "_prod_mcp_servers": "Lavorando su questo repo non c'e' motivo di modificare infrastruttura vera. Azure resta leggibile (get_*, list_*), ma ogni scrittura viene bloccata invece di chiedere conferma: in modalita auto una conferma viene concessa da sola.",
+  "_prod_mcp_servers": "While working on this repo there is no reason to modify real infrastructure. Azure stays readable (get_*, list_*), but every write is blocked instead of asking for confirmation: in auto mode a confirmation is granted on its own.",
   "prod_mcp_servers": ["Azure-MCP-Server"],
 
   "ask_mcp_servers": [],
 
-  "_prose_mcp_servers": "Il connettore Docs scrive solo documenti: un testo che parla di produzione non e' una modifica alla produzione. Il 2026-10-05 bloccava il documento sul confronto Sonnet/Opus. Gli identificativi delle sue chiamate restano controllati. Aggiunto su decisione dell'utente, il 2026-10-06.",
+  "_prose_mcp_servers": "The Docs connector only writes documents: a text that talks about production is not a change to production. On 2026-10-05 it blocked the document on the Sonnet/Opus comparison. The identifiers of its calls stay checked. Added by the user's decision, on 2026-10-06.",
   "prose_mcp_servers": ["claude_ai_Claude_Docs"],
 
-  "_prod_patterns": "Vuoto di proposito: questo repo non ha ambienti. I default del hook bastano, e aggiungere qui gli host d'esempio della documentazione (db-produzione.esempio.com, appdb) renderebbe sospetto ogni comando che tocca services/ o tests/.",
+  "_prod_patterns": "Empty on purpose: this repo has no environments. The hook defaults are enough, and adding here the example hosts from the documentation (db-production.example.com, appdb) would make every command that touches services/ or tests/ suspicious.",
   "prod_patterns": [],
 
-  "_deny_commands": "1) pericoloso.sh e una fixture: esiste per essere LETTA dal hook quando qualcuno la invoca, e contiene un rsync --delete verso un host remoto. Invocarla oggi e solo una conferma, e in modalita auto la conferma la da l'agente. La regola scatta solo quando la fixture viene eseguita (anche con bash/sh, sudo, timeout, source, path assoluto), non quando il path compare come testo: il 2026-10-04 aveva bloccato un printf che lo citava dentro un JSON di prova. 2) GUARDRAIL_DISABLE= spegne il hook: e una decisione umana, presa fuori dalla sessione. Leggerla (printenv GUARDRAIL_DISABLE) resta permesso, serve a /guardrail:check.",
+  "_deny_commands": "1) dangerous.sh is a fixture: it exists to be READ by the hook when someone invokes it, and it contains an rsync --delete towards a remote host. Invoking it today is only a confirmation, and in auto mode the agent grants the confirmation. The rule fires only when the fixture is executed (also with bash/sh, sudo, timeout, source, absolute path), not when the path appears as text: on 2026-10-04 it had blocked a printf that quoted it inside a test JSON. 2) GUARDRAIL_DISABLE= switches the hook off: it is a human decision, taken outside the session. Reading it (printenv GUARDRAIL_DISABLE) stays allowed, /guardrail:check needs it.",
   "deny_commands": [
-    "(?:^|[;&|(\\n]\\s*)(?:(?:sudo|nohup|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(?:(?:ba|z|da)?sh\\s+(?:-\\S+\\s+)*|(?:source|\\.)\\s+)?(?:\\S*/)?tests/fixtures/pericoloso\\.sh\\b",
+    "(?:^|[;&|(\\n]\\s*)(?:(?:sudo|nohup|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(?:(?:ba|z|da)?sh\\s+(?:-\\S+\\s+)*|(?:source|\\.)\\s+)?(?:\\S*/)?tests/fixtures/dangerous\\.sh\\b",
     "GUARDRAIL_DISABLE\\s*="
   ],
 
-  "_ask_commands": "Il marketplace installa il plugin da GitHub, ramo main: un push qui aggiorna il codice dei hook che girera' sulle macchine di chi ha guardrail installato. Non e' un commit qualunque, ed e' giusto fermarsi un attimo.",
+  "_ask_commands": "The marketplace installs the plugin from GitHub, branch main: a push here updates the hook code that will run on the machines of everyone who has guardrail installed. It is not just any commit, and it is right to pause for a moment.",
   "ask_commands": [
     "\\bgit\\s+push\\b"
   ],
 
-  "_allow_commands": "Vuoto, e che resti vuoto: e' l'eccezione che disattiva le regole. Se un giorno ne serve una, va motivata nel commit che la introduce.",
+  "_allow_commands": "Empty, and may it stay empty: it is the exception that switches the rules off. If one day an entry is needed, it must be justified in the commit that introduces it.",
   "allow_commands": []
 }

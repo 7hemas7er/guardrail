@@ -1,26 +1,26 @@
 {
-  "prod_mcp_servers": ["postgres", "telemetria"],
+  "prod_mcp_servers": ["postgres", "telemetry"],
   "ask_mcp_servers": ["postgres-test"],
   "prose_mcp_servers": ["claude_ai_Claude_Docs", "github"],
-  "prod_patterns": ["db-produzione\\.esempio\\.com", "\\bappdb\\b(?!_)"],
+  "prod_patterns": ["db-production\\.example\\.com", "\\bappdb\\b(?!_)"],
   "deny_commands": ["scripts/deploy/(promote-to-production|rollback-production)\\.sh"],
   "ask_commands": ["scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh"],
   "allow_commands": ["^echo GUARDRAIL_OK"],
   "allow_scripts": [
     {
-      "path": "tests/fixtures/approvato\\.sh",
-      "sha256": "625f88e43b64baae03eff3c2a39e771eae5026455f53fed9b304ecc3d2d4b45f"
+      "path": "tests/fixtures/approved\\.sh",
+      "sha256": "c9e4ea39a95f1d21479993120484f3fad2d546c7fed1fd7e121dbf378e448e8c"
     },
     {
-      "path": "tests/fixtures/approvato_ma_vietato\\.sh",
-      "sha256": "d11ce1da22c7499b6508992f789c95c0f81421d9bff8e0cb2a5b139d75735bdc"
+      "path": "tests/fixtures/approved_but_denied\\.sh",
+      "sha256": "da80ec03901c10575e9f8b44880c7e7cd1b1376e9022e62e3359c42dc82e31ea"
     },
     {
-      "path": "tests/fixtures/pericoloso\\.sh",
+      "path": "tests/fixtures/dangerous\\.sh",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
-      "path": "tests/fixtures/senza_impronta\\.sh"
+      "path": "tests/fixtures/without_fingerprint\\.sh"
     }
   ]
 }

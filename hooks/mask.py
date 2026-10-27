@@ -1,49 +1,49 @@
 #!/usr/bin/env python3
-"""Guardrail — mascheramento dei termini riservati.
+"""Guardrail — masking of reserved terms.
 
-Alcuni termini (nomi di host, di persone, di luoghi, di clienti) non devono arrivare
-al modello, da qualunque parte escano: l'output di un comando, un documento letto,
-un risultato di ricerca, la risposta di un server MCP. La mappa sta in
-~/.config/guardrail/mask.tsv, fuori da ogni repo, una coppia per riga:
+Some terms (names of hosts, people, places, customers) must not reach the model,
+whichever way they come out: the output of a command, a document read, a search
+result, the reply of an MCP server. The map lives in ~/.config/guardrail/mask.tsv,
+outside every repo, one pair per line:
 
-    termine-reale   segnaposto        # separati da spazi o TAB; '#' commenta
+    real-term   placeholder        # separated by spaces or TAB; '#' comments
 
-Senza mappa non succede nulla. Con la mappa, due direzioni:
+Without a map nothing happens. With the map, two directions:
 
-  verso il modello   ogni risultato di tool passa da `mask.py output` (PostToolUse,
-                     `updatedToolOutput`): ogni stringa del risultato esce con i
-                     segnaposto. Il transcript salva la versione riscritta, quindi
-                     anche una sessione ripresa non rivede l'originale.
-                     Bash in più passa da `mask.py run`, che maschera già in uscita:
-                     è l'unico modo di coprire i comandi che falliscono, perché
-                     l'errore di un tool (PostToolUseFailure) non si può riscrivere.
-  verso la macchina  il modello scrive segnaposto, i tool ricevono termini reali
-                     (`unmask_tool_input`, via `updatedInput` di PreToolUse, che il
-                     modello non vede). Solo dove un errore non può rimandare
-                     indietro il termine reale: vedi la funzione.
+  towards the model    every tool result goes through `mask.py output` (PostToolUse,
+                       `updatedToolOutput`): every string of the result comes out with
+                       the placeholders. The transcript saves the rewritten version, so
+                       even a resumed session never sees the original again.
+                       Bash additionally goes through `mask.py run`, which masks on the
+                       way out: it is the only way to cover commands that fail, because
+                       a tool's error (PostToolUseFailure) cannot be rewritten.
+  towards the machine  the model writes placeholders, the tools receive real terms
+                       (`unmask_tool_input`, via `updatedInput` of PreToolUse, which the
+                       model does not see). Only where an error cannot send the real
+                       term back: see the function.
 
-Negato, perché il risultato non si può mascherare: il Read di PDF, documenti Office
-e archivi (il testo non è nei byte: via Bash pdftotext / unzip -p escono mascherati),
-WebFetch verso un indirizzo che contiene un segnaposto (la pagina la legge un
-modello prima di qualunque hook: per una risorsa privata si usa curl via Bash), e i
-comandi che mostrano il testo trasformato (od, xxd, base64, rev…), dove il filtro
-non riconosce più le parole.
+Denied, because the result cannot be masked: the Read of PDFs, Office documents
+and archives (the text is not in the bytes: via Bash pdftotext / unzip -p they come
+out masked), WebFetch towards an address that contains a placeholder (a model reads
+the page before any hook: for a private resource use curl via Bash), and the
+commands that show the text transformed (od, xxd, base64, rev…), where the filter
+no longer recognizes the words.
 
-Il prompt che contiene un termine reale è bloccato (`mask.py prompt`): un hook non
-può riscriverlo, solo fermarlo.
+A prompt that contains a real term is blocked (`mask.py prompt`): a hook cannot
+rewrite it, only stop it.
 
-Non coperto, e non copribile da un hook: il contenuto delle immagini (screenshot,
-foto); il contesto che Claude Code inietta da sé (git status e commit recenti, che
-si tolgono con `"includeGitInstructions": false`; CLAUDE.md; i file citati con @);
-qualunque altra trasformazione del testo fatta apposta per aggirare il filtro. È una
-protezione contro l'esposizione accidentale, non contro un agente che la cerca.
+Not covered, and not coverable by a hook: the content of images (screenshots,
+photos); the context Claude Code injects by itself (git status and recent commits,
+removed with `"includeGitInstructions": false`; CLAUDE.md; files cited with @);
+any other transformation of the text made on purpose to work around the filter. It
+is a protection against accidental exposure, not against an agent looking for it.
 
-Uso da riga di comando:
-    mask.py run      esegue lo script letto da stdin con la mappa applicata
-    mask.py output   hook PostToolUse (JSON di Claude Code su stdin)
-    mask.py prompt   hook UserPromptSubmit (JSON di Claude Code su stdin)
+Command-line usage:
+    mask.py run      runs the script read from stdin with the map applied
+    mask.py output   PostToolUse hook (Claude Code JSON on stdin)
+    mask.py prompt   UserPromptSubmit hook (Claude Code JSON on stdin)
 
-Solo libreria standard.
+Standard library only.
 """
 from __future__ import annotations
 
@@ -57,34 +57,34 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 
-# Un termine è mascherato solo se non è parte di una parola più lunga: `nas-magazzino`
-# e `magazzino.lan` sì, `magazzinone` no. L'underscore conta come separatore.
-_PRIMA = r"(?<![A-Za-z0-9])"
-_DOPO = r"(?![A-Za-z0-9])"
+# A term is masked only if it is not part of a longer word: `nas-warehouse` and
+# `warehouse.lan` yes, `warehouses` no. The underscore counts as a separator.
+_BEFORE = r"(?<![A-Za-z0-9])"
+_AFTER = r"(?![A-Za-z0-9])"
 
-# Formati il cui testo non compare nei byte (compresso o binario): il risultato del
-# Read non si può mascherare, quindi si nega. Via Bash si convertono in testo.
-FORMATI_OPACHI = frozenset({
+# Formats whose text does not appear in the bytes (compressed or binary): the result
+# of the Read cannot be masked, so it is denied. Via Bash they are converted to text.
+OPAQUE_FORMATS = frozenset({
     ".pdf", ".doc", ".docx", ".docm", ".dot", ".dotx", ".xls", ".xlsx", ".xlsm",
     ".ppt", ".pptx", ".odt", ".ods", ".odp", ".epub", ".pages", ".numbers", ".key",
     ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jar",
 })
 
-# Comandi che mostrano un testo trasformato: un carattere per colonna, in esadecimale,
-# codificato, al contrario. Il filtro lavora sulle parole e lì non le riconosce: è
-# successo nella prima prova reale, `od -c` usato per capire un Edit fallito ha
-# mostrato il termine lettera per lettera. Un filtro testuale non ferma ogni
-# trasformazione possibile; questi sono quelli a cui si ricorre per "guardare i byte".
-COMANDI_TRASFORMANTI = re.compile(
+# Commands that show a transformed text: one character per column, in hexadecimal,
+# encoded, reversed. The filter works on words and there it does not recognize them:
+# it happened in the first real trial, `od -c` used to understand a failed Edit
+# showed the term letter by letter. A textual filter does not stop every possible
+# transformation; these are the ones people reach for to "look at the bytes".
+TRANSFORMING_COMMANDS = re.compile(
     r"(?:^|[\s;&|(`$])(od|xxd|hexdump|hd|base64|base32|basenc|uuencode|rev)(?=\s|$|[;&|)])"
 )
 
-# Chiavi del risultato di un tool che contengono dati binari codificati, non testo:
-# una sostituzione lì dentro corromperebbe l'immagine senza nascondere nulla.
-CHIAVI_BINARIE = frozenset({"base64"})
+# Keys of a tool result that contain encoded binary data, not text: a substitution
+# in there would corrupt the image without hiding anything.
+BINARY_KEYS = frozenset({"base64"})
 
 
-class MappaNonValida(Exception):
+class InvalidMap(Exception):
     pass
 
 
@@ -96,217 +96,217 @@ def map_path() -> Path:
 
 
 def load_pairs() -> list[tuple[str, str]]:
-    """[(reale, segnaposto)], i termini più lunghi prima. Vuota se la mappa non c'è.
+    """[(real, placeholder)], longest terms first. Empty if there is no map.
 
-    Una mappa che esiste ma non si legge o è incoerente solleva MappaNonValida:
-    chi la usa deve fermarsi, non procedere senza mascheramento.
+    A map that exists but cannot be read or is inconsistent raises InvalidMap:
+    whoever uses it must stop, not go on without masking.
     """
     path = map_path()
     if not path.exists():
         return []
     try:
-        righe = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
-        raise MappaNonValida(f"mappa {path} illeggibile: {exc}") from exc
+        raise InvalidMap(f"map {path} unreadable: {exc}") from exc
 
     pairs: list[tuple[str, str]] = []
-    for numero, riga in enumerate(righe, start=1):
-        riga = riga.split("#", 1)[0].strip()
-        if not riga:
+    for number, line in enumerate(lines, start=1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
-        campi = riga.split()
-        if len(campi) != 2:
-            raise MappaNonValida(f"mappa {path}, riga {numero}: servono due campi, termine reale e segnaposto")
-        reale, finto = campi
-        if reale.lower() == finto.lower():
-            raise MappaNonValida(f"mappa {path}, riga {numero}: il segnaposto coincide con il termine reale")
-        pairs.append((reale, finto))
+        fields = line.split()
+        if len(fields) != 2:
+            raise InvalidMap(f"map {path}, line {number}: two fields needed, real term and placeholder")
+        real, fake = fields
+        if real.lower() == fake.lower():
+            raise InvalidMap(f"map {path}, line {number}: the placeholder coincides with the real term")
+        pairs.append((real, fake))
 
-    for reale, _ in pairs:
-        for _, finto in pairs:
-            if _cerca(reale).search(finto):
-                raise MappaNonValida(
-                    f"mappa {path}: un segnaposto contiene un termine reale, l'output lo rimetterebbe in chiaro"
+    for real, _ in pairs:
+        for _, fake in pairs:
+            if _search(real).search(fake):
+                raise InvalidMap(
+                    f"map {path}: a placeholder contains a real term, the output would put it back in the clear"
                 )
     return sorted(pairs, key=lambda pair: len(pair[0]), reverse=True)
 
 
-def _cerca(termine: str) -> re.Pattern[str]:
-    return re.compile(_PRIMA + re.escape(termine) + _DOPO, re.IGNORECASE)
+def _search(term: str) -> re.Pattern[str]:
+    return re.compile(_BEFORE + re.escape(term) + _AFTER, re.IGNORECASE)
 
 
-def _stessa_forma(trovato: str, sostituto: str) -> str:
-    """`CASA` -> `SEDE1`, `Casa` -> `Sede1`, il resto minuscolo come nella mappa.
+def _same_shape(found: str, replacement: str) -> str:
+    """`HOME` -> `SITE1`, `Home` -> `Site1`, the rest lowercase as in the map.
 
-    Serve al viaggio di ritorno: il modello riscrive il segnaposto con le maiuscole
-    che ha visto, e un sed deve ritrovare nel file la forma originale.
+    Needed for the return trip: the model rewrites the placeholder with the capitals
+    it has seen, and a sed must find the original form in the file.
     """
-    if trovato.isupper() and len(trovato) > 1:
-        return sostituto.upper()
-    if trovato[:1].isupper() and trovato[1:].islower():
-        return sostituto[:1].upper() + sostituto[1:]
-    return sostituto
+    if found.isupper() and len(found) > 1:
+        return replacement.upper()
+    if found[:1].isupper() and found[1:].islower():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
 
 
-def _sostituisci(text: str, da: str, a: str) -> str:
-    return _cerca(da).sub(lambda m: _stessa_forma(m.group(0), a), text)
+def _replace(text: str, src: str, dst: str) -> str:
+    return _search(src).sub(lambda m: _same_shape(m.group(0), dst), text)
 
 
 def mask(text: str, pairs: list[tuple[str, str]]) -> str:
-    """Termini reali -> segnaposto: tutto ciò che va verso il modello."""
-    for reale, finto in pairs:
-        text = _sostituisci(text, reale, finto)
+    """Real terms -> placeholders: everything that goes towards the model."""
+    for real, fake in pairs:
+        text = _replace(text, real, fake)
     return text
 
 
 def unmask(text: str, pairs: list[tuple[str, str]]) -> str:
-    """Segnaposto -> termini reali: ciò che il modello scrive e la macchina esegue."""
-    for reale, finto in pairs:
-        text = _sostituisci(text, finto, reale)
+    """Placeholders -> real terms: what the model writes and the machine runs."""
+    for real, fake in pairs:
+        text = _replace(text, fake, real)
     return text
 
 
 def contains_real(text: str, pairs: list[tuple[str, str]]) -> bool:
-    return any(_cerca(reale).search(text) for reale, _ in pairs)
+    return any(_search(real).search(text) for real, _ in pairs)
 
 
 def contains_placeholder(text: str, pairs: list[tuple[str, str]]) -> bool:
-    return any(_cerca(finto).search(text) for _, finto in pairs)
+    return any(_search(fake).search(text) for _, fake in pairs)
 
 
 def mask_value(value: Any, pairs: list[tuple[str, str]]) -> Any:
-    """Maschera ogni stringa di una struttura JSON, lasciando intatte chiavi e forma:
-    è la condizione perché Claude Code accetti il risultato riscritto."""
+    """Masks every string of a JSON structure, leaving keys and shape intact:
+    that is the condition for Claude Code to accept the rewritten result."""
     if isinstance(value, str):
         return mask(value, pairs)
     if isinstance(value, list):
         return [mask_value(item, pairs) for item in value]
     if isinstance(value, dict):
         return {
-            key: item if key in CHIAVI_BINARIE else mask_value(item, pairs)
+            key: item if key in BINARY_KEYS else mask_value(item, pairs)
             for key, item in value.items()
         }
     return value
 
 
 # ---------------------------------------------------------------------------
-# Verso la macchina: l'input dei tool
+# Towards the machine: the tools' input
 # ---------------------------------------------------------------------------
 
 def wrap_command(cmd: str) -> str:
-    """Il comando Bash riscritto: il testo del modello passa intatto al runner via
-    heredoc, e i termini reali li inserisce il runner leggendo la mappa.
+    """The Bash command rewritten: the model's text goes to the runner untouched via
+    heredoc, and the runner inserts the real terms by reading the map.
 
-    Non si mette il comando già convertito in `updatedInput`, benché il modello non
-    lo veda: lo vedrebbero la richiesta di conferma e, in modalità auto, il
-    classificatore, che è a sua volta un modello.
+    The already converted command is not put in `updatedInput`, although the model
+    does not see it: the confirmation request would see it and, in auto mode, so
+    would the classifier, which is itself a model.
     """
-    delimitatore = "__GUARDRAIL_MASK__"
-    righe = cmd.splitlines()
-    while delimitatore in righe:
-        delimitatore += "_"
+    delimiter = "__GUARDRAIL_MASK__"
+    lines = cmd.splitlines()
+    while delimiter in lines:
+        delimiter += "_"
     runner = HERE / "run-python.sh"
     return (
-        f'bash "{runner}" "{HERE / "mask.py"}" run <<\'{delimitatore}\'\n'
+        f'bash "{runner}" "{HERE / "mask.py"}" run <<\'{delimiter}\'\n'
         f"{cmd}\n"
-        f"{delimitatore}"
+        f"{delimiter}"
     )
 
 
-def _percorso(raw: str, cwd: str) -> Path:
+def _path(raw: str, cwd: str) -> Path:
     path = Path(os.path.expanduser(raw))
     return path if path.is_absolute() or not cwd else Path(cwd) / path
 
 
-def _percorso_reale(raw: Any, cwd: str, pairs: list[tuple[str, str]]) -> Any:
-    """Un percorso col segnaposto diventa quello reale solo se quello reale esiste e
-    l'altro no: altrimenti l'errore "file inesistente" citerebbe il termine reale."""
+def _real_path(raw: Any, cwd: str, pairs: list[tuple[str, str]]) -> Any:
+    """A path with the placeholder becomes the real one only if the real one exists
+    and the other does not: otherwise the "no such file" error would cite the real term."""
     if not isinstance(raw, str) or not contains_placeholder(raw, pairs):
         return raw
-    reale = unmask(raw, pairs)
-    if _percorso(reale, cwd).exists() and not _percorso(raw, cwd).exists():
-        return reale
+    real = unmask(raw, pairs)
+    if _path(real, cwd).exists() and not _path(raw, cwd).exists():
+        return real
     return raw
 
 
 def unmask_tool_input(tool: str, tool_input: dict, cwd: str, pairs: list[tuple[str, str]]) -> dict | None:
-    """L'input con i segnaposto tornati termini reali, o None se non cambia nulla.
+    """The input with the placeholders turned back into real terms, or None if nothing changes.
 
-    Solo per i tool che lavorano in locale senza un modello di mezzo, e solo dove un
-    errore del tool non può citare il termine reale: l'errore di un tool arriva al
-    modello così com'è (PostToolUseFailure non lo riscrive). Per questo:
-      - Read, Grep, Glob: i percorsi solo se il file reale esiste; il pattern di Grep
-        e Glob sì (una ricerca vuota non è un errore).
-      - Write: il contenuto sì, un file scritto non viene citato nell'errore.
-    Edit no: Claude Code verifica che old_string sia nel file *prima* dei hook, quindi
-    un Edit col segnaposto fallisce senza mai arrivare qui. Si modifica via Bash
-    (sed), dove il runner converte i segnaposto; l'avviso di sessione lo dice.
-    Esclusi i server MCP (un errore del server può citare la query), WebFetch e
-    WebSearch (l'input finisce a un modello o a un motore di ricerca), Agent e simili
-    (il prompt va a un altro modello): lì il segnaposto resta segnaposto.
+    Only for the tools that work locally without a model in between, and only where
+    a tool error cannot cite the real term: a tool's error reaches the model as it
+    is (PostToolUseFailure does not rewrite it). Hence:
+      - Read, Grep, Glob: the paths only if the real file exists; the pattern of Grep
+        and Glob yes (an empty search is not an error).
+      - Write: the content yes, a written file is not cited in the error.
+    Not Edit: Claude Code checks that old_string is in the file *before* the hooks, so
+    an Edit with the placeholder fails without ever getting here. Editing goes via
+    Bash (sed), where the runner converts the placeholders; the session notice says so.
+    Excluded: MCP servers (a server error can cite the query), WebFetch and
+    WebSearch (the input ends up at a model or a search engine), Agent and the like
+    (the prompt goes to another model): there the placeholder stays a placeholder.
     """
     if not pairs:
         return None
-    nuovo = dict(tool_input)
+    new = dict(tool_input)
 
-    for chiave in ("file_path", "path", "notebook_path"):
-        if chiave in nuovo:
-            nuovo[chiave] = _percorso_reale(nuovo[chiave], cwd, pairs)
+    for key in ("file_path", "path", "notebook_path"):
+        if key in new:
+            new[key] = _real_path(new[key], cwd, pairs)
 
     if tool in ("Grep", "Glob"):
-        for chiave in ("pattern", "glob"):
-            if isinstance(nuovo.get(chiave), str):
-                nuovo[chiave] = unmask(nuovo[chiave], pairs)
+        for key in ("pattern", "glob"):
+            if isinstance(new.get(key), str):
+                new[key] = unmask(new[key], pairs)
     elif tool == "Write":
-        if isinstance(nuovo.get("content"), str):
-            nuovo["content"] = unmask(nuovo["content"], pairs)
+        if isinstance(new.get("content"), str):
+            new["content"] = unmask(new["content"], pairs)
     elif tool not in ("Read",):
         return None
 
-    return nuovo if nuovo != tool_input else None
+    return new if new != tool_input else None
 
 
 def blocking_reason(tool: str, tool_input: dict, pairs: list[tuple[str, str]]) -> str | None:
-    """Il motivo per negare un tool il cui risultato non si può mascherare."""
+    """The reason to deny a tool whose result cannot be masked."""
     if not pairs:
         return None
     if tool == "Bash":
-        trovato = COMANDI_TRASFORMANTI.search(str(tool_input.get("command", "")))
-        if trovato:
+        found = TRANSFORMING_COMMANDS.search(str(tool_input.get("command", "")))
+        if found:
             return (
-                f"{trovato.group(1)} mostra il testo trasformato (byte, codifica, al contrario) e il "
-                "filtro non vi riconosce i termini mascherati: con il mascheramento attivo non si usa. "
-                "Per capire perché un testo non corrisponde, rileggilo con cat o grep."
+                f"{found.group(1)} shows the text transformed (bytes, encoding, reversed) and the "
+                "filter does not recognize the masked terms in it: with masking active it is not used. "
+                "To understand why a text does not match, read it again with cat or grep."
             )
     if tool == "Read":
         raw = tool_input.get("file_path")
-        if isinstance(raw, str) and Path(raw).suffix.lower() in FORMATI_OPACHI:
+        if isinstance(raw, str) and Path(raw).suffix.lower() in OPAQUE_FORMATS:
             return (
-                f"{Path(raw).name}: il testo di questo formato non si può mascherare nel risultato del "
-                "Read. Convertilo via Bash (pdftotext file -, unzip -p, …): lì l'output esce già "
-                "con i segnaposto."
+                f"{Path(raw).name}: the text of this format cannot be masked in the result of the "
+                "Read. Convert it via Bash (pdftotext file -, unzip -p, …): there the output already "
+                "comes out with the placeholders."
             )
     if tool == "WebFetch":
         url = tool_input.get("url")
         if isinstance(url, str) and (contains_placeholder(url, pairs) or contains_real(url, pairs)):
             return (
-                "l'indirizzo contiene un termine mascherato: WebFetch fa leggere la pagina a un modello "
-                "prima di qualunque hook. Per una risorsa privata usa curl via Bash."
+                "the address contains a masked term: WebFetch has a model read the page "
+                "before any hook. For a private resource use curl via Bash."
             )
     return None
 
 
 # ---------------------------------------------------------------------------
-# Riga di comando
+# Command line
 # ---------------------------------------------------------------------------
 
 def cmd_run() -> int:
     script = sys.stdin.read()
     try:
         pairs = load_pairs()
-    except MappaNonValida as exc:
-        # Il messaggio non contiene termini reali: cita solo path e numero di riga.
-        print(f"[guardrail] {exc}: comando non eseguito", file=sys.stderr)
+    except InvalidMap as exc:
+        # The message contains no real terms: it cites only path and line number.
+        print(f"[guardrail] {exc}: command not run", file=sys.stderr)
         return 1
 
     proc = subprocess.Popen(
@@ -317,16 +317,16 @@ def cmd_run() -> int:
     )
     assert proc.stdout is not None
     out = sys.stdout.buffer
-    for riga in iter(proc.stdout.readline, b""):
-        testo = riga.decode("utf-8", errors="surrogateescape")
-        out.write(mask(testo, pairs).encode("utf-8", errors="surrogateescape"))
+    for line in iter(proc.stdout.readline, b""):
+        text = line.decode("utf-8", errors="surrogateescape")
+        out.write(mask(text, pairs).encode("utf-8", errors="surrogateescape"))
         out.flush()
-    codice = proc.wait()
-    # Ucciso da un segnale: lo stesso codice che avrebbe restituito la shell.
-    return 128 - codice if codice < 0 else codice
+    code = proc.wait()
+    # Killed by a signal: the same code the shell would have returned.
+    return 128 - code if code < 0 else code
 
 
-def _leggi_payload() -> dict:
+def _read_payload() -> dict:
     try:
         payload = json.load(sys.stdin)
     except ValueError:
@@ -335,52 +335,52 @@ def _leggi_payload() -> dict:
 
 
 def cmd_output() -> int:
-    payload = _leggi_payload()
+    payload = _read_payload()
     try:
         pairs = load_pairs()
-    except MappaNonValida:
-        return 0  # guard.py ha già negato il tool prima che partisse
+    except InvalidMap:
+        return 0  # guard.py has already denied the tool before it started
     if not pairs or "tool_response" not in payload:
         return 0
-    risultato = payload["tool_response"]
-    mascherato = mask_value(risultato, pairs)
-    if mascherato != risultato:
+    result = payload["tool_response"]
+    masked = mask_value(result, pairs)
+    if masked != result:
         print(json.dumps({
-            "hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedToolOutput": mascherato}
+            "hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedToolOutput": masked}
         }, ensure_ascii=False))
     return 0
 
 
 def cmd_prompt() -> int:
-    payload = _leggi_payload()
+    payload = _read_payload()
     prompt = str(payload.get("prompt", ""))
     try:
         pairs = load_pairs()
-    except MappaNonValida as exc:
+    except InvalidMap as exc:
         print(json.dumps({"decision": "block", "reason": f"[guardrail] {exc}"}))
         return 0
-    trovati = [finto for reale, finto in pairs if _cerca(reale).search(prompt)]
-    if trovati:
-        # Il motivo lo legge l'utente, non il modello: il prompt bloccato non parte.
+    found = [fake for real, fake in pairs if _search(real).search(prompt)]
+    if found:
+        # The user reads the reason, not the model: the blocked prompt never starts.
         print(json.dumps({
             "decision": "block",
             "reason": (
-                "[guardrail] il prompt contiene un termine mascherato: riscrivilo usando "
-                f"il segnaposto ({', '.join(sorted(set(trovati)))})."
+                "[guardrail] the prompt contains a masked term: rewrite it using "
+                f"the placeholder ({', '.join(sorted(set(found)))})."
             ),
         }, ensure_ascii=False))
     return 0
 
 
 def main() -> int:
-    comando = sys.argv[1] if len(sys.argv) > 1 else ""
-    if comando == "run":
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "run":
         return cmd_run()
-    if comando == "output":
+    if command == "output":
         return cmd_output()
-    if comando == "prompt":
+    if command == "prompt":
         return cmd_prompt()
-    print("uso: mask.py run|output|prompt", file=sys.stderr)
+    print("usage: mask.py run|output|prompt", file=sys.stderr)
     return 2
 
 

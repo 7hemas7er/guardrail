@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
-"""Guardrail — hook PreToolUse per Claude Code.
+"""Guardrail — PreToolUse hook for Claude Code.
 
-Legge da stdin il JSON che Claude Code passa ai hook:
+Reads from stdin the JSON that Claude Code passes to hooks:
     {"tool_name": "...", "tool_input": {...}, "cwd": "...", "session_id": "..."}
-e risponde su stdout con una decisione:
-    allow  -> nessun output (il tool procede)
-    ask    -> chiede conferma. ⚠️ NON garantisce un umano: in modalità auto la
-              concede l'agente. Solo `deny` non è scavalcabile.
-    deny   -> blocca il tool e spiega a Claude il motivo
+and answers on stdout with a decision:
+    allow  -> no output (the tool proceeds)
+    ask    -> asks for confirmation. ⚠️ Does NOT guarantee a human: in auto mode
+              the agent grants it. Only `deny` cannot be overridden.
+    deny   -> blocks the tool and explains the reason to Claude
 
-Quattro famiglie di regole, tutte nella funzione `decide`:
-    Bash        comandi distruttivi, deploy con cancellazione, SQL da CLI su prod,
-                letture di segreti da shell (cat .env), scritture da shell alla
-                configurazione di guardrail, script invocati (letti e scansionati)
-    mcp__*__*   query SQL via server MCP: scritture su prod, DELETE/UPDATE senza WHERE;
-                ogni altro server MCP: operazioni distruttive o di modifica
-    Write/Edit  file di segreti, dotfile della home, ~/.claude, la configurazione
-                di guardrail stessa, e tutto ciò che sta fuori dal progetto
-    Read        file di segreti, ~/.ssh e le altre directory di credenziali
+Four families of rules, all in the `decide` function:
+    Bash        destructive commands, deploys that delete, SQL from the CLI on prod,
+                reads of secrets from the shell (cat .env), shell writes to the
+                guardrail configuration, invoked scripts (read and scanned)
+    mcp__*__*   SQL queries via MCP servers: writes on prod, DELETE/UPDATE without WHERE;
+                every other MCP server: destructive or mutating operations
+    Write/Edit  secret files, home dotfiles, ~/.claude, the guardrail configuration
+                itself, and everything outside the project
+    Read        secret files, ~/.ssh and the other credential directories
 
-Con ~/.config/guardrail/mask.tsv presente, in più riporta ai termini reali i
-segnaposto nell'input dei tool, fa passare ogni comando Bash dal runner di
-mascheramento e nega i tool il cui risultato non si può mascherare (vedi
-hooks/mask.py). Senza la mappa, nessuna differenza.
+With ~/.config/guardrail/mask.tsv present, it also maps the placeholders in the
+tool input back to the real terms, runs every Bash command through the masking
+runner and denies the tools whose result cannot be masked (see hooks/mask.py).
+Without the map, no difference.
 
-Guardrail vale solo nei progetti che l'hanno scelto: quelli con un `.guardrail.json`
-nella root o in una directory superiore (vedi `attivo`). Altrove valgono solo le
-regole che proteggono guardrail stesso (la sua configurazione, il suo codice, le
-impostazioni di Claude Code) e il mascheramento, che segue la mappa e non il progetto.
-Le liste di `.guardrail.json` si sommano a quelle di `~/.guardrail.json`, che però
-non accende niente da solo. Vedi README.md.
+Guardrail applies only in the projects that opted in: those with a `.guardrail.json`
+in the root or in a parent directory (see `is_active`). Elsewhere only the rules
+that protect guardrail itself apply (its configuration, its code, the Claude Code
+settings), plus masking, which follows the map and not the project.
+The lists in `.guardrail.json` add up to those in `~/.guardrail.json`, which however
+turns nothing on by itself. See README.md.
 
-Solo libreria standard. Nessuna dipendenza, nessuna rete.
+Standard library only. No dependencies, no network.
 """
 from __future__ import annotations
 
@@ -46,34 +46,34 @@ import tempfile
 import time
 from pathlib import Path
 
-import mask  # hooks/mask.py: mascheramento dei termini riservati, attivo solo con la mappa
+import mask  # hooks/mask.py: masking of reserved terms, active only with the map
 
 # ---------------------------------------------------------------------------
-# Configurazione
+# Configuration
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
-    # Regex (case-insensitive) che, se compaiono nel comando o nel nome del
-    # server MCP, marcano il bersaglio come PRODUZIONE.
+    # Regexes (case-insensitive) that, when they appear in the command or in the
+    # MCP server name, mark the target as PRODUCTION.
     "prod_patterns": [r"\bprod(uction|uzione)?\b", r"\blive\b"],
-    # Nomi esatti di server MCP che sono produzione (spesso solo "postgres").
+    # Exact names of MCP servers that are production (often just "postgres").
     "prod_mcp_servers": [],
-    # Server MCP condivisi ma non prod: le scritture chiedono conferma.
+    # Shared but non-prod MCP servers: writes ask for confirmation.
     "ask_mcp_servers": [],
-    # Server MCP che scrivono testo (documenti, note): il testo dei loro campi di
-    # contenuto non conta per riconoscere un bersaglio di produzione. Solo per nome
-    # esatto, dichiarato da chi configura il progetto.
+    # MCP servers that write text (documents, notes): the text of their content
+    # fields does not count for recognizing a production target. Exact name only,
+    # declared by whoever configures the project.
     "prose_mcp_servers": [],
-    # Regex aggiuntive sul comando Bash: blocco secco / conferma / eccezione.
+    # Extra regexes on the Bash command: hard block / confirmation / exception.
     "deny_commands": [],
     "ask_commands": [],
     "allow_commands": [],
-    # Script già letti e approvati: {"path": regex, "sha256": impronta}. Esentano
-    # solo la scansione del contenuto, e solo finché il contenuto non cambia.
+    # Scripts already read and approved: {"path": regex, "sha256": fingerprint}. They
+    # exempt only the content scan, and only as long as the content does not change.
     "allow_scripts": [],
 }
 
-# Le voci di queste chiavi sono oggetti, non regex: non vanno convertite in stringa.
+# The entries of these keys are objects, not regexes: they must not be converted to strings.
 OBJECT_KEYS = frozenset({"allow_scripts"})
 
 WRITE_SQL = re.compile(
@@ -82,137 +82,137 @@ WRITE_SQL = re.compile(
 )
 READ_ONLY_START = re.compile(r"^\s*(SELECT|WITH|EXPLAIN|SHOW|DESCRIBE|DESC|TABLE|VALUES|\\d)", re.I)
 
-# Parole che dicono "qui c'è del SQL". Servono a non trattare come query il
-# campo `query` di un server MCP che SQL non ne parla affatto.
+# Words that say "there is SQL here". They keep the `query` field of an MCP
+# server that does not speak SQL at all from being treated as a query.
 SQL_KEYWORD = re.compile(
     r"\b(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|MERGE|REPLACE"
     r"|CALL|DO|COPY|EXPLAIN|SHOW|DESCRIBE|VACUUM|ANALYZE|REFRESH|BEGIN|COMMIT|ROLLBACK)\b",
     re.I,
 )
-# Istruzioni che non leggono e non scrivono: delimitano una transazione o
-# toccano lo stato di sessione. Non rendono una lettura una scrittura.
+# Statements that neither read nor write: they delimit a transaction or touch
+# the session state. They do not turn a read into a write.
 SQL_NEUTRAL = re.compile(r"^\s*(BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK|END|SET|SHOW)\b", re.I)
-# `SELECT ... INTO tabella` crea una tabella: legge come una lettura, scrive.
+# `SELECT ... INTO table` creates a table: it reads like a read, it writes.
 SELECT_INTO = re.compile(r"^\s*SELECT\b(?![^;]*\bINSERT\b)[^;]*\bINTO\s+[\w\".]+", re.I | re.S)
-# Funzioni che dentro una SELECT non sono letture: eseguono SQL altrove, toccano
-# il filesystem, interrompono sessioni, avanzano sequenze. `SELECT` da solo non
-# dimostra niente, e il SQL che queste eseguono sta dentro un literal, cioè
-# esattamente dove lo scheletro non guarda.
+# Functions that inside a SELECT are not reads: they run SQL elsewhere, touch
+# the filesystem, terminate sessions, advance sequences. `SELECT` alone proves
+# nothing, and the SQL these run sits inside a literal, which is exactly where
+# the skeleton does not look.
 SQL_UNSAFE_FUNC = re.compile(
     r"\b(dblink(_exec)?|query_to_xml|pg_terminate_backend|pg_cancel_backend|pg_read_(binary_)?file"
     r"|pg_ls_dir|lo_(import|export|unlink)|pg_stat_statements_reset|pg_logical_slot_get_changes"
     r"|setval|nextval|load_file|sys_exec|sys_eval)\s*\(",
     re.I,
 )
-# MySQL: `SELECT … INTO OUTFILE` scrive un file sul server.
+# MySQL: `SELECT … INTO OUTFILE` writes a file on the server.
 SELECT_OUTFILE = re.compile(r"\bINTO\s+(OUTFILE|DUMPFILE)\b", re.I)
-# Apertura di un dollar-quote: $$ oppure $tag$.
+# Opening of a dollar-quote: $$ or $tag$.
 DOLLAR_TAG = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 
 
-def sql_normalizzato(sql: str) -> tuple[str, bool]:
-    """Il SQL con literal e commenti svuotati, e se ci si può fidare del risultato.
+def normalized_sql(sql: str) -> tuple[str, bool]:
+    """The SQL with literals and comments emptied, and whether the result can be trusted.
 
-    Attraversa il testo una volta sola tenendo lo stato — testo, literal fra
-    apici (con `''` raddoppiato), dollar-quote con tag, commento di riga,
-    commento a blocco annidabile — perché letterali e commenti si intrecciano e
-    nessun ordine di sostituzioni regge: un apice dentro `/* … */` non è un
-    apice per il database, ma per una regex sì, e lì dentro ci si può nascondere
-    una `DELETE`.
+    Walks the text once keeping state — text, quoted literal (with doubled
+    `''`), dollar-quote with tag, line comment, nestable block comment —
+    because literals and comments interleave and no order of substitutions
+    holds up: a quote inside `/* … */` is not a quote for the database, but it
+    is for a regex, and a `DELETE` can hide in there.
 
-    Si applica solo al SQL puro (payload di un tool MCP), MAI a una riga di
-    shell: lì gli apici delimitano il payload di `psql -c '...'` e svuotarli
-    nasconderebbe la scrittura vera.
+    Applies only to pure SQL (payload of an MCP tool), NEVER to a shell line:
+    there the quotes delimit the payload of `psql -c '...'` and emptying them
+    would hide the real write.
 
-    Il secondo valore è falso quando a fine testo un literal o un commento è
-    rimasto aperto: il testo non si capisce, e chi non capisce non autorizza.
+    The second value is false when at the end of the text a literal or a comment
+    is still open: the text is not understood, and whoever does not understand
+    does not authorize.
     """
-    pezzi: list[str] = []
-    affidabile = True
+    pieces: list[str] = []
+    reliable = True
     i, n = 0, len(sql)
     while i < n:
         if sql.startswith("--", i):
-            fine = sql.find("\n", i)
-            pezzi.append(" ")
-            i = n if fine == -1 else fine
+            end = sql.find("\n", i)
+            pieces.append(" ")
+            i = n if end == -1 else end
             continue
         if sql.startswith("/*", i):
-            livello, j = 1, i + 2
-            while j < n and livello:
+            level, j = 1, i + 2
+            while j < n and level:
                 if sql.startswith("/*", j):
-                    livello, j = livello + 1, j + 2
+                    level, j = level + 1, j + 2
                 elif sql.startswith("*/", j):
-                    livello, j = livello - 1, j + 2
+                    level, j = level - 1, j + 2
                 else:
                     j += 1
-            affidabile = affidabile and livello == 0
-            pezzi.append(" ")
+            reliable = reliable and level == 0
+            pieces.append(" ")
             i = j
             continue
         if sql[i] == "'":
-            j, chiuso = i + 1, False
+            j, closed = i + 1, False
             while j < n:
                 if sql[j] != "'":
                     j += 1
                 elif j + 1 < n and sql[j + 1] == "'":
                     j += 2
                 else:
-                    chiuso, j = True, j + 1
+                    closed, j = True, j + 1
                     break
-            affidabile = affidabile and chiuso
-            pezzi.append(" '' ")
+            reliable = reliable and closed
+            pieces.append(" '' ")
             i = j
             continue
-        if (apertura := DOLLAR_TAG.match(sql, i)):
-            tag = apertura.group(0)
-            chiusura = sql.find(tag, apertura.end())
-            affidabile = affidabile and chiusura != -1
-            pezzi.append(" '' ")
-            i = n if chiusura == -1 else chiusura + len(tag)
+        if (opening := DOLLAR_TAG.match(sql, i)):
+            tag = opening.group(0)
+            closing = sql.find(tag, opening.end())
+            reliable = reliable and closing != -1
+            pieces.append(" '' ")
+            i = n if closing == -1 else closing + len(tag)
             continue
-        pezzi.append(sql[i])
+        pieces.append(sql[i])
         i += 1
-    return "".join(pezzi), affidabile
+    return "".join(pieces), reliable
 
 
-def classifica_sql(sql: str) -> str:
-    """`lettura`, `scrittura` o `incerta`.
+def classify_sql(sql: str) -> str:
+    """`read`, `write` or `uncertain`.
 
-    `incerta` non è un ripiego: è la risposta onesta per un `DO $$ … $$`, una
-    `CALL`, un `COPY … FROM`, un literal non chiuso. Chi la riceve non deve
-    tirare a indovinare — su produzione si ferma e mostra la query.
+    `uncertain` is not a fallback: it is the honest answer for a `DO $$ … $$`, a
+    `CALL`, a `COPY … FROM`, an unclosed literal. Whoever receives it must not
+    guess — on production it stops and shows the query.
     """
-    scheletro, affidabile = sql_normalizzato(sql)
-    if not affidabile:
-        return "incerta"
-    istruzioni = [s for s in scheletro.split(";") if s.strip()]
-    if not istruzioni:
-        return "incerta"
-    if any(WRITE_SQL.search(s) or SELECT_INTO.match(s) or SELECT_OUTFILE.search(s) for s in istruzioni):
-        return "scrittura"
-    if any(SQL_UNSAFE_FUNC.search(s) for s in istruzioni):
-        return "incerta"
-    if all(READ_ONLY_START.match(s) or SQL_NEUTRAL.match(s) for s in istruzioni):
-        return "lettura"
-    return "incerta"
+    skeleton, reliable = normalized_sql(sql)
+    if not reliable:
+        return "uncertain"
+    statements = [s for s in skeleton.split(";") if s.strip()]
+    if not statements:
+        return "uncertain"
+    if any(WRITE_SQL.search(s) or SELECT_INTO.match(s) or SELECT_OUTFILE.search(s) for s in statements):
+        return "write"
+    if any(SQL_UNSAFE_FUNC.search(s) for s in statements):
+        return "uncertain"
+    if all(READ_ONLY_START.match(s) or SQL_NEUTRAL.match(s) for s in statements):
+        return "read"
+    return "uncertain"
 
 
-def query_esposta(sql: str, limite: int = 300) -> str:
-    """La query dentro il messaggio: chi decide deve vedere cosa girerebbe.
+def exposed_query(sql: str, limit: int = 300) -> str:
+    """The query inside the message: whoever decides must see what would run.
 
-    Le credenziali si redigono — una connection string in un payload finirebbe
-    nella trascrizione e nel log — e il testo si tronca, perché serve a decidere,
-    non ad archiviare. I valori restano visibili: sono ciò che rende la query
-    giudicabile. Possono però essere dati personali, e il messaggio lo ricorda.
+    Credentials are redacted — a connection string in a payload would end up in
+    the transcript and in the log — and the text is truncated, because it serves
+    to decide, not to archive. Values stay visible: they are what makes the query
+    judgeable. They may however be personal data, and the message says so.
     """
-    pulita = re.sub(r"(?i)\b(password|pwd|passwd|token|secret|api[_-]?key)\s*=\s*('[^']*'|[^\s')]+)", r"\1=***", sql)
-    pulita = re.sub(r"(?i)(://[^:\s/@]+):[^@\s/]+@", r"\1:***@", pulita)
-    pulita = " ".join(pulita.split())
-    if len(pulita) > limite:
-        pulita = f"{pulita[:limite]}… (+{len(pulita) - limite} caratteri)"
-    return pulita
+    clean = re.sub(r"(?i)\b(password|pwd|passwd|token|secret|api[_-]?key)\s*=\s*('[^']*'|[^\s')]+)", r"\1=***", sql)
+    clean = re.sub(r"(?i)(://[^:\s/@]+):[^@\s/]+@", r"\1:***@", clean)
+    clean = " ".join(clean.split())
+    if len(clean) > limit:
+        clean = f"{clean[:limit]}… (+{len(clean) - limit} characters)"
+    return clean
 
-# Dimensione massima di uno script invocato che il hook accetta di leggere.
+# Maximum size of an invoked script that the hook agrees to read.
 SCRIPT_MAX_BYTES = 256 * 1024
 
 
@@ -225,11 +225,12 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def config_progetto(start: str) -> Path | None:
-    """Il .guardrail.json che vale per `start`: il primo risalendo verso la radice.
+def project_config(start: str) -> Path | None:
+    """The .guardrail.json that applies to `start`: the first one walking up to the root.
 
-    Quello nella home non conta: sono le liste comuni dell'utente, e se valesse come
-    configurazione di progetto accenderebbe guardrail in ogni cartella sotto la home.
+    The one in the home does not count: those are the user's shared lists, and if it
+    counted as project configuration it would turn guardrail on in every folder under
+    the home.
     """
     if not start:
         return None
@@ -238,8 +239,8 @@ def config_progetto(start: str) -> Path | None:
         home = Path.home().resolve()
     except (OSError, RuntimeError):
         return None
-    # Conta qualunque voce con quel nome, non solo un file: un link a /dev/null o una
-    # directory al suo posto non devono spegnere guardrail.
+    # Any entry with that name counts, not only a file: a link to /dev/null or a
+    # directory in its place must not turn guardrail off.
     for candidate in [current, *current.parents]:
         probe = candidate / ".guardrail.json"
         if candidate != home and os.path.lexists(probe):
@@ -247,19 +248,19 @@ def config_progetto(start: str) -> Path | None:
     return None
 
 
-def attivo(cwd: str) -> bool:
-    """Guardrail è acceso qui? Solo dove un .guardrail.json lo dice.
+def is_active(cwd: str) -> bool:
+    """Is guardrail on here? Only where a .guardrail.json says so.
 
-    Basta che ce l'abbia la directory di lavoro o il progetto da cui è partita la
-    sessione (CLAUDE_PROJECT_DIR): un `cd` fuori dal progetto non lo spegne.
+    It is enough that the working directory or the project the session started
+    from (CLAUDE_PROJECT_DIR) has one: a `cd` outside the project does not turn it off.
     """
     if os.environ.get("GUARDRAIL_CONFIG"):
         return True
-    return any(config_progetto(start) for start in (cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")))
+    return any(project_config(start) for start in (cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")))
 
 
 def load_config(cwd: str) -> dict:
-    """Unisce default, ~/.guardrail.json e il .guardrail.json del progetto."""
+    """Merges defaults, ~/.guardrail.json and the project's .guardrail.json."""
     config = {key: list(value) for key, value in DEFAULT_CONFIG.items()}
 
     sources: list[Path] = []
@@ -268,9 +269,9 @@ def load_config(cwd: str) -> dict:
         sources.append(Path(override))
     else:
         sources.append(Path.home() / ".guardrail.json")
-        progetto = config_progetto(cwd or os.getcwd()) or config_progetto(os.environ.get("CLAUDE_PROJECT_DIR", ""))
-        if progetto:
-            sources.append(progetto)
+        project = project_config(cwd or os.getcwd()) or project_config(os.environ.get("CLAUDE_PROJECT_DIR", ""))
+        if project:
+            sources.append(project)
 
     for source in sources:
         for key, value in _read_json(source).items():
@@ -280,7 +281,7 @@ def load_config(cwd: str) -> dict:
 
 
 def project_root(cwd: str) -> Path | None:
-    """La root git del progetto (o la cwd stessa se non è un repo)."""
+    """The project's git root (or the cwd itself if it is not a repo)."""
     if not cwd:
         return None
     try:
@@ -294,7 +295,7 @@ def project_root(cwd: str) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Decisioni
+# Decisions
 # ---------------------------------------------------------------------------
 
 class Decision(Exception):
@@ -323,13 +324,13 @@ def matches_any(patterns: list[str], text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Bash: cancellazioni
+# Bash: deletions
 # ---------------------------------------------------------------------------
 
-# `timeout [opzioni] 60 cmd`: lancia cmd, che resta in posizione di comando.
+# `timeout [options] 60 cmd`: launches cmd, which stays in command position.
 TIMEOUT_PREFIX = r"\btimeout\s+(?:[^\s;&|]+\s+)*?\d[\d.]*[smhd]?\s+"
-# In posizione di comando, anche dietro ciò che lancia il comando seguente senza
-# cambiarlo: `command rm -rf "$X"` (la forma di nvm.sh), `env rm`, `FOO=1 rm`.
+# In command position, also behind whatever launches the following command without
+# changing it: `command rm -rf "$X"` (the nvm.sh form), `env rm`, `FOO=1 rm`.
 RM_PREFIX = r"(?:(?:command|builtin|exec|nohup|time|env(?:\s+-[^\s;&|]+)*|\w+=[^\s;&|]*)\s+)*"
 RM_ANY = re.compile(
     r"(?:(?:^|[;&|(\n])\s*" + RM_PREFIX + r"|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX
@@ -339,14 +340,14 @@ RM_ANY = re.compile(
 RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?:\s|$)")
 DANGEROUS_RM_TARGET = re.compile(
     r"""^(?:["']?)(?:
-        \$|\{\$|              # variabile: $HOME, $S, ${X}
+        \$|\{\$|              # variable: $HOME, $S, ${X}
         ~|                    # home
-        /home/[^/\s"']+/?["']?$ |  # /home/utente
+        /home/[^/\s"']+/?["']?$ |  # /home/user
         /root/?["']?$ |
         /(?:[a-z]+/?)?["']?$ |     # /, /usr, /etc ...
-        \.\.?["']?$ |         # . oppure ..
-        \.\*|\.\[|\.\.\?\*|   # glob nascosti: .* .[!.]* ..?*
-        \*["']?$              # * da solo
+        \.\.?["']?$ |         # . or ..
+        \.\*|\.\[|\.\.\?\*|   # hidden globs: .* .[!.]* ..?*
+        \*["']?$              # * alone
     )""",
     re.X,
 )
@@ -363,84 +364,84 @@ def check_rm(cmd: str) -> None:
         for arg in args.split():
             if arg.startswith("-") or not DANGEROUS_RM_TARGET.match(arg):
                 continue
-            # Un rm non ricorsivo su una variabile ha raggio limitato: conferma,
-            # non blocco. Tutto il resto (ricorsivo, home, radici, glob) è blocco.
+            # A non-recursive rm on a variable has a limited reach: confirmation,
+            # not block. Everything else (recursive, home, roots, globs) is a block.
             if not recursive and re.match(r"""^["']?[$\{]""", arg):
                 variable_only = variable_only or arg
                 continue
             deny(
-                f"rm{' ricorsivo' if recursive else ''} su un bersaglio non sicuro: {arg!r}. "
-                "Vietati: variabili ($HOME, $DIR...), ~, radici di sistema, '.', '..', glob nascosti (.*, .[!.]*) e '*'. "
-                "Usa un path letterale e relativo al progetto, oppure chiedi all'utente di cancellare a mano. "
-                "(guardrail: filesystem-shell-segreti.md)"
+                f"rm{' (recursive)' if recursive else ''} on an unsafe target: {arg!r}. "
+                "Forbidden: variables ($HOME, $DIR...), ~, system roots, '.', '..', hidden globs (.*, .[!.]*) and '*'. "
+                "Use a literal path relative to the project, or ask the user to delete by hand. "
+                "(guardrail: filesystem-shell-secrets.md)"
             )
         if variable_only:
             ask(
-                f"rm su una variabile ({variable_only!r}): il bersaglio dipende dal valore al momento "
-                "dell'esecuzione, e una variabile vuota o con spazi cancella altro. Stampa il path, "
-                "mostralo, e usa quello letterale. Conferma?"
+                f"rm on a variable ({variable_only!r}): the target depends on the value at execution "
+                "time, and an empty variable or one with spaces deletes something else. Print the path, "
+                "show it, and use the literal one. Confirm?"
             )
     for match in FIND_DELETE.finditer(cmd):
         root = match.group("root") or "."
         if root != "." and DANGEROUS_RM_TARGET.match(root):
-            deny(f"find … -delete / -exec rm a partire da {root!r}: cancellazione ricorsiva su un bersaglio non sicuro.")
+            deny(f"find … -delete / -exec rm starting from {root!r}: recursive deletion on an unsafe target.")
         ask(
-            f"find … -delete / -exec rm a partire da {root!r}: cancella tutto ciò che il predicato seleziona. "
-            "Prima lo stesso find senza -delete, mostrato all'utente. Conferma?"
+            f"find … -delete / -exec rm starting from {root!r}: deletes everything the predicate selects. "
+            "First the same find without -delete, shown to the user. Confirm?"
         )
 
 
 # ---------------------------------------------------------------------------
-# Bash: segreti e configurazione
+# Bash: secrets and configuration
 # ---------------------------------------------------------------------------
 
-# `\.env(?:\.[\w-]+)*` prende la catena *intera* dei suffissi: con un solo
-# segmento `.env.azure.example` si fermerebbe a `.env.azure`, e l'esenzione
-# template (ancorata in fondo) non vedrebbe mai `.example`.
-# `.env` è un nome di file solo se comincia lì: in `process.env.HOME` e
-# `os.environ` è un pezzo di identificatore, e leggerlo come il file `.env.HOME`
-# è il falso positivo del 2026-09-28 (9 volte in una settimana). Davanti ci può
-# stare l'inizio, `/`, uno spazio, una virgoletta, `=`; mai una lettera o `$`.
+# `\.env(?:\.[\w-]+)*` takes the *whole* chain of suffixes: with a single
+# segment `.env.azure.example` would stop at `.env.azure`, and the template
+# exemption (anchored at the end) would never see `.example`.
+# `.env` is a file name only if it starts there: in `process.env.HOME` and
+# `os.environ` it is a piece of an identifier, and reading it as the file `.env.HOME`
+# is the false positive of 2026-09-28 (9 times in a week). Before it there can be
+# the start, `/`, a space, a quote, `=`; never a letter or `$`.
 SECRET_FILE = re.compile(
     r"(?:[\w./~-]*/)?(?:(?<![\w$])\.env(?:rc)?(?:\.[\w-]+)*(?![A-Za-z0-9])|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
     r"|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc"
     r"|\.aws/credentials|\.docker/config\.json|\.kube/config|gh/hosts\.yml|\.gnupg/[^\s\"']+"
     r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
 )
-# Comandi che stampano o trasformano il contenuto di un file: il segreto finisce
-# nella trascrizione della sessione, che resta su disco.
+# Commands that print or transform the content of a file: the secret ends up
+# in the session transcript, which stays on disk.
 SECRET_READERS = re.compile(
     r"\b(cat|bat|tac|less|more|head|tail|nl|od|xxd|strings|grep|egrep|fgrep|rg|ag|awk|sed|cut|base64|jq|tee)\b"
 )
 SECRET_SOURCERS = re.compile(r"(?:^|[;&|]\s*)(?:source|\.)\s+\S")
-# Comandi il cui primo operando è un'espressione, non un file: in
-# `grep "\.env" casi.jsonl` quel `.env` è una regex e non si legge nessun segreto.
+# Commands whose first operand is an expression, not a file: in
+# `grep "\.env" cases.jsonl` that `.env` is a regex and no secret is read.
 PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "perl"}
-# ...a meno che il pattern arrivi da un flag: allora ogni operando è un file.
-# Anche in forma composta (`sed -ne`, `grep -ve`, `awk -f`).
+# ...unless the pattern comes from a flag: then every operand is a file.
+# Also in compound form (`sed -ne`, `grep -ve`, `awk -f`).
 PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file", "--expression"}
 PATTERN_SHORT_FLAG = re.compile(r"-[a-zA-Z]*[ef]")
 
-# File che governano guardrail e Claude Code: modificarli da shell è il modo di
-# aggirare un blocco senza passare da Write/Edit.
+# Files that govern guardrail and Claude Code: modifying them from the shell is
+# the way to work around a block without going through Write/Edit.
 PROTECTED_PATH = re.compile(
     r"(?:^|[\s/\"'=])(?P<path>\.guardrail\.json|\.claude/settings(?:\.local)?\.json|\.claude/CLAUDE\.md"
     r"|\.claude/(?P<plugin>plugins|hooks)(?:/[^\s\"']*)?|\.claude/(?:commands|skills|agents|rules)(?:/[^\s\"']*)?)",
-    re.I,  # su NTFS (WSL, /mnt/c) .GUARDRAIL.JSON è lo stesso file
+    re.I,  # on NTFS (WSL, /mnt/c) .GUARDRAIL.JSON is the same file
 )
 SHELL_WRITER_CMDS = re.compile(
     r"(?:^|[;&|(])\s*(?:sudo\s+)?(?:tee|cp|mv|rm|sed|perl|truncate|ln|install|chmod|chattr|dd|rsync|python3?|node)\b"
 )
 
-# Chi scrive, e *dove*. Nominare un path non è modificarlo: `ls .claude/hooks/`
-# legge, `cp .claude/hooks/x /tmp/` copia *da* lì. Conta la direzione, cioè quali
-# operandi sono bersaglio della scrittura:
-#   all      ogni operando (rm, tee, chmod: sono tutti bersagli)
-#   last     solo l'ultimo (cp, mv, ln, rsync, install: gli altri sono sorgenti)
-#   inplace  solo se c'è il flag di modifica sul posto (sed -i, perl -pi)
-#   of       solo l'operando of= (dd)
-#   opaque   non ispezionabile da fuori (python, node): tutti, per prudenza
-CODICE_INLINE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
+# Who writes, and *where*. Naming a path is not modifying it: `ls .claude/hooks/`
+# reads, `cp .claude/hooks/x /tmp/` copies *from* there. The direction counts, that
+# is which operands are the target of the write:
+#   all      every operand (rm, tee, chmod: they are all targets)
+#   last     only the last one (cp, mv, ln, rsync, install: the others are sources)
+#   inplace  only if the in-place edit flag is there (sed -i, perl -pi)
+#   of       only the of= operand (dd)
+#   opaque   not inspectable from outside (python, node): all of them, to be safe
+INLINE_CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
 WRITER_TARGETS = {
     "tee": "all", "rm": "all", "rmdir": "all", "shred": "all", "truncate": "all",
     "mkdir": "all", "touch": "all", "chmod": "all", "chown": "all", "chattr": "all",
@@ -449,50 +450,50 @@ WRITER_TARGETS = {
     "dd": "of",
     "python": "opaque", "python3": "opaque", "node": "opaque",
 }
-# Quel che sta *prima* del vero comando: `sudo -u deploy rm x`, `FOO=1 tee y`,
+# What stands *before* the real command: `sudo -u deploy rm x`, `FOO=1 tee y`,
 # `timeout 60 grep …`.
 COMMAND_PREFIX = re.compile(r"^(?:sudo|command|env|nohup|time|xargs|\w+=.*)$")
 PREFIX_VALUE_FLAGS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-n", "-I"}
-# `timeout` ha una durata obbligatoria fra sé e il comando: senza saltarla,
-# `timeout 60 grep -o "process\.env" bin` prende 60 per il comando e il pattern
-# per un file. Falso positivo del 2026-09-28.
-DURATA = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+# `timeout` has a mandatory duration between itself and the command: without
+# skipping it, `timeout 60 grep -o "process\.env" bin` takes 60 as the command and
+# the pattern as a file. False positive of 2026-09-28.
+DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]?")
 TIMEOUT_VALUE_FLAGS = {"-s", "-k", "--signal", "--kill-after"}
 
 
-def dopo_timeout(tokens: list[str], indice: int) -> int:
-    """L'indice del comando che `timeout` lancia: dopo le sue opzioni e la durata."""
-    while indice < len(tokens) and tokens[indice].startswith("-"):
-        indice += 2 if tokens[indice] in TIMEOUT_VALUE_FLAGS else 1
-    if indice < len(tokens) and DURATA.fullmatch(tokens[indice]):
-        indice += 1
-    return indice
+def after_timeout(tokens: list[str], index: int) -> int:
+    """The index of the command that `timeout` launches: after its options and the duration."""
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 2 if tokens[index] in TIMEOUT_VALUE_FLAGS else 1
+    if index < len(tokens) and DURATION.fullmatch(tokens[index]):
+        index += 1
+    return index
 
 
-def senza_prefissi(tokens: list[str]) -> list[str]:
-    """Il comando vero con i suoi argomenti, tolto ciò che gli sta davanti."""
+def without_prefixes(tokens: list[str]) -> list[str]:
+    """The real command with its arguments, stripped of what stands before it."""
     seen_prefix = False
     while tokens:
         if os.path.basename(tokens[0]) == "timeout":
-            tokens = tokens[dopo_timeout(tokens, 1):]
+            tokens = tokens[after_timeout(tokens, 1):]
             seen_prefix = False
             continue
         if COMMAND_PREFIX.match(tokens[0]):
             tokens = tokens[1:]
             seen_prefix = True
             continue
-        # I flag di sudo/env/xargs, non quelli del comando vero.
+        # The flags of sudo/env/xargs, not those of the real command.
         if seen_prefix and tokens[0].startswith("-"):
             tokens = tokens[2:] if tokens[0] in PREFIX_VALUE_FLAGS else tokens[1:]
             continue
         break
     return tokens
 IN_PLACE_FLAG = re.compile(r"^--in-place|^-[a-zA-Z]*i")
-# Codice (Python, JavaScript) che scrive, cancella o sposta file. Largo di
-# proposito: un falso allarme qui riporta solo al comportamento prudente di prima.
-# `dumps(` resta fuori: `json.dumps`, `pickle.dumps`, `yaml.dump` senza stream
-# producono una stringa, non toccano file. Il 2026-10-17 un `print(json.dumps(d))`
-# su un file dei plugin solo letto veniva negato come scrittura.
+# Code (Python, JavaScript) that writes, deletes or moves files. Deliberately
+# broad: a false alarm here only falls back to the cautious behaviour of before.
+# `dumps(` stays out: `json.dumps`, `pickle.dumps`, `yaml.dump` without a stream
+# produce a string, they do not touch files. On 2026-10-17 a `print(json.dumps(d))`
+# on a plugin file that was only read was denied as a write.
 CODE_WRITES = re.compile(
     r"\b(?:write\w*|append\w*|dump(?!s\s*\()\w*|save\w*|unlink\w*|rename\w*|rm\w*|remove\w*|copy\w*|cp\w*|move\w*"
     r"|symlink\w*|link\w*|mkdir\w*|makedirs|truncate\w*|chmod\w*|chown\w*|utime\w*|touch|replace|extract\w*"
@@ -500,19 +501,19 @@ CODE_WRITES = re.compile(
     r"|\bopen\w*\s*\([^\n]*?['\"][rbt]*[wax+][rwabxt+]*['\"]"
     r"|\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND)\b|\bshutil\b|\bfs\.promises\b"
 )
-# Codice che lancia processi: lì una stringa può diventare un comando di shell
-# (`os.system("rm -rf …")`, `execSync(…)`), e le regole della shell devono vederla.
-# Niente `\b` davanti: `asyncio.create_subprocess_shell` e `os.execvp` contano.
-# L'accesso dinamico (`getattr(os, 'sys' + 'tem')`, `__import__`, `eval`) vale
-# come un lancio: da fuori non si sa cosa chiama. È comunque una lista nera, e
-# protegge da un agente che sbaglia, non da uno che cerca il buco.
+# Code that launches processes: there a string can become a shell command
+# (`os.system("rm -rf …")`, `execSync(…)`), and the shell rules must see it.
+# No `\b` in front: `asyncio.create_subprocess_shell` and `os.execvp` count.
+# Dynamic access (`getattr(os, 'sys' + 'tem')`, `__import__`, `eval`) counts
+# as a launch: from outside nobody knows what it calls. It is still a blacklist,
+# and protects from an agent that makes a mistake, not from one looking for the hole.
 SPAWNS_PROCESS = re.compile(
     r"(?:subprocess|child_process|Open3|getattr|__import__|importlib|builtins|process\.binding)"
     r"|(?:system|popen|exec\w*|spawn\w*|shell_exec|passthru|proc_open|eval|Function|globals)\s*\("
 )
-# `node -e '…'`, `python3 -c "…"`: il codice passato come stringa, intero. La
-# regex trova i candidati; che node o python siano davvero il comando lo decide
-# `comando_finale`, che legge la riga con le virgolette (vedi giudica_codice_inline).
+# `node -e '…'`, `python3 -c "…"`: the code passed as a string, whole. The
+# regex finds the candidates; whether node or python really are the command is
+# decided by `final_command`, which reads the line with its quotes (see judge_inline_code).
 INLINE_CODE = re.compile(
     r"\b(?:node\s+(?:-[\w=-]+\s+)*?(?:-[ep]+|--eval|--print)|python[\d.]*\s+(?:-[\w=-]+\s+)*?-[a-zA-Z]*c)"
     r"""\s+(?P<code>'[^']*'|"(?:[^"\\]|\\.)*")"""
@@ -521,107 +522,107 @@ CODE_FLAG = re.compile(r"-[ep]+|--eval|--print|-[a-zA-Z]*c")
 SHELL_PUNCTUATION = frozenset("();<>|&")
 
 
-def segmenti_veri(testo: str) -> list[str] | None:
-    """I segmenti di `testo` divisi dai separatori *veri*: `;`, `|`, `&`, `(`, `)` o a
-    capo fuori da virgolette, escape e commenti. Nel segmento la punteggiatura citata o
-    escapata (`";"`, `\\>`) diventa `_`, perché nessuno la scambi dopo per un
-    operatore: shlex in modo posix toglie le virgolette, e `";"` tornerebbe `;`.
+def real_segments(text: str) -> list[str] | None:
+    """The segments of `text` split by the *real* separators: `;`, `|`, `&`, `(`, `)` or
+    newline outside quotes, escapes and comments. Inside a segment, quoted or escaped
+    punctuation (`";"`, `\\>`) becomes `_`, so that nobody later mistakes it for an
+    operator: shlex in posix mode strips the quotes, and `";"` would become `;` again.
 
-    Un `\\` fuori dalle virgolette si porta via il carattere che segue, a capo
-    compreso: `bash -s \\` a capo `python3` è un comando solo, bash. Un `#` a
-    inizio parola apre un commento fino a capo, e lì niente è un operatore.
-    None se `testo` finisce dentro una stringa, un escape o un commento: chi
-    chiede dei comandi di una riga che non si chiude non sa niente.
+    A `\\` outside quotes takes the following character with it, newline included:
+    `bash -s \\` newline `python3` is a single command, bash. A `#` at the start of
+    a word opens a comment up to the newline, and there nothing is an operator.
+    None if `text` ends inside a string, an escape or a comment: whoever asks about
+    the commands of a line that does not close knows nothing.
     """
-    segmenti: list[str] = []
-    corrente: list[str] = []
-    stato = ""  # "" fuori, "'" o '"' dentro una stringa, "#" in un commento
-    i, n = 0, len(testo)
+    segments: list[str] = []
+    current: list[str] = []
+    state = ""  # "" outside, "'" or '"' inside a string, "#" in a comment
+    i, n = 0, len(text)
     while i < n:
-        c = testo[i]
-        if stato == "#":
+        c = text[i]
+        if state == "#":
             if c == "\n":
-                segmenti.append("".join(corrente))
-                stato, corrente = "", []
+                segments.append("".join(current))
+                state, current = "", []
             i += 1
             continue
-        if stato == "'":
-            stato = "" if c == "'" else stato
-            corrente.append("_" if c in "();<>|&" else c)
+        if state == "'":
+            state = "" if c == "'" else state
+            current.append("_" if c in "();<>|&" else c)
             i += 1
             continue
         if c == "\\":
             if i + 1 >= n:
                 return None
-            if testo[i + 1] != "\n":
-                seguente = testo[i + 1]
-                corrente.append("\\" + ("_" if seguente in "();<>|&" else seguente))
+            if text[i + 1] != "\n":
+                following = text[i + 1]
+                current.append("\\" + ("_" if following in "();<>|&" else following))
             i += 2
             continue
-        if stato == '"':
-            stato = "" if c == '"' else stato
-            corrente.append("_" if c in "();<>|&" else c)
+        if state == '"':
+            state = "" if c == '"' else state
+            current.append("_" if c in "();<>|&" else c)
             i += 1
             continue
         if c in "'\"":
-            stato = c
-            corrente.append(c)
-        elif c == "#" and (not corrente or corrente[-1] in " \t"):
-            stato = "#"
+            state = c
+            current.append(c)
+        elif c == "#" and (not current or current[-1] in " \t"):
+            state = "#"
         elif c in ";|&()\n":
-            segmenti.append("".join(corrente))
-            corrente = []
+            segments.append("".join(current))
+            current = []
         else:
-            corrente.append(c)
+            current.append(c)
         i += 1
-    if stato:
+    if state:
         return None
-    return segmenti + ["".join(corrente)]
+    return segments + ["".join(current)]
 
 
-def ultimo_segmento(testo: str) -> str | None:
-    """Il testo dopo l'ultimo separatore vero (vedi segmenti_veri)."""
-    segmenti = segmenti_veri(testo)
-    return None if segmenti is None else segmenti[-1]
+def last_segment(text: str) -> str | None:
+    """The text after the last real separator (see real_segments)."""
+    segments = real_segments(text)
+    return None if segments is None else segments[-1]
 
 
-def comando_finale(testo: str) -> tuple[str, list[str], bool] | None:
-    """Il comando in corso alla fine di `testo`, letto come lo legge la shell:
-    virgolette comprese, separatori (`;`, `&&`, `|`, `(`, a capo) e prefissi
-    (`sudo`, `env`, `FOO=1`, `timeout 60`) esclusi. Nome, argomenti, e se ha una
-    redirezione in uscita.
+def final_command(text: str) -> tuple[str, list[str], bool] | None:
+    """The command in progress at the end of `text`, read the way the shell reads it:
+    quotes included, separators (`;`, `&&`, `|`, `(`, newline) and prefixes
+    (`sudo`, `env`, `FOO=1`, `timeout 60`) excluded. Name, arguments, and whether
+    it has an output redirection.
 
-    None se non si sa: la fine di `testo` sta dentro una stringa, dopo un escape
-    o in un commento; c'è un backtick; il segmento non ha comando. Chi riceve
-    None non deve concludere niente di favorevole.
+    None if unknown: the end of `text` is inside a string, after an escape or in
+    a comment; there is a backtick; the segment has no command. Whoever receives
+    None must not conclude anything favourable.
     """
-    segmento = ultimo_segmento(testo)
-    if segmento is None or "`" in segmento:
+    segment = last_segment(text)
+    if segment is None or "`" in segment:
         return None
-    lexer = shlex.shlex(segmento, punctuation_chars=True, posix=True)
+    lexer = shlex.shlex(segment, punctuation_chars=True, posix=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
         return None
-    comando: list[str] = []
-    uscita = salta = False
+    command: list[str] = []
+    output = skip = False
     for token in tokens:
-        if salta:
-            salta = False
+        if skip:
+            skip = False
             continue
         if token and set(token) <= {"<", ">"}:
-            uscita = uscita or ">" in token
-            salta = True
+            output = output or ">" in token
+            skip = True
             continue
-        comando.append(token)
-    comando = senza_prefissi(comando)
-    if not comando:
+        command.append(token)
+    command = without_prefixes(command)
+    if not command:
         return None
-    return os.path.basename(comando[0]), comando[1:], uscita
-# Il bersaglio di una redirezione è il token che la segue, non il comando che la
-# contiene: `ls .claude/hooks 2>/dev/null` scrive su /dev/null, non sui hook.
+    return os.path.basename(command[0]), command[1:], output
+# The target of a redirection is the token that follows it, not the command that
+# contains it: `ls .claude/hooks 2>/dev/null` writes to /dev/null, not to the hooks.
 REDIRECT = re.compile(r"(?:^|\s)\d*>>?\s*(?P<target>[^\s;&|<>()]+)")
 
 
@@ -634,7 +635,7 @@ def redirect_targets(segment: str) -> list[str]:
 
 
 def shell_tokens(segment: str) -> list[str]:
-    """Token del comando, tolte le redirezioni. Virgolette sbilanciate: best effort."""
+    """Tokens of the command, redirections removed. Unbalanced quotes: best effort."""
     cleaned = REDIRECT.sub(" ", segment)
     try:
         return shlex.split(cleaned)
@@ -642,24 +643,24 @@ def shell_tokens(segment: str) -> list[str]:
         return cleaned.split()
 
 
-def dati_di_plugin(arg: str) -> bool:
-    """`arg` è un path pulito che porta davvero dentro `~/.claude/plugins/data/`: niente
-    `..`, virgolette o caratteri di shell, e con i link risolti resta lì sotto. Un
-    argomento che solo *contiene* quel pezzo di path non basta."""
+def plugin_data(arg: str) -> bool:
+    """`arg` is a clean path that really leads inside `~/.claude/plugins/data/`: no
+    `..`, quotes or shell characters, and with links resolved it stays under there. An
+    argument that merely *contains* that piece of path is not enough."""
     if arg.startswith("-") or any(c in arg for c in "'\"();`$|&<>*?[]{}\\\n") or ".." in arg.split("/"):
         return False
     try:
         base = (Path.home() / ".claude" / "plugins" / "data").resolve()
-        reale = Path(os.path.expanduser(arg)).resolve()
+        real = Path(os.path.expanduser(arg)).resolve()
     except (OSError, RuntimeError):
         return False
-    return reale != base and is_inside(reale, base)
+    return real != base and is_inside(real, base)
 
 
 def write_targets(segment: str) -> list[str]:
-    """Gli operandi su cui il comando *scrive*. Un comando di lettura non ne ha."""
+    """The operands the command *writes* to. A read command has none."""
     targets = redirect_targets(segment)
-    tokens = senza_prefissi(shell_tokens(segment))
+    tokens = without_prefixes(shell_tokens(segment))
     if not tokens:
         return targets
     mode = WRITER_TARGETS.get(os.path.basename(tokens[0]))
@@ -675,17 +676,17 @@ def write_targets(segment: str) -> list[str]:
     if mode == "last" and not any(f in ("-t", "--target-directory") for f in flags):
         operands = operands[-1:]
     if mode == "opaque":
-        # Uno script che riceve il path di un log di plugin lo legge: `.claude/plugins/data/`
-        # sono i dati dei plugin (log, stato), non il loro codice. Falso positivo del
-        # 2026-10-07: `node join.ts ~/.claude/plugins/data/…/log.jsonl` negato come
-        # modifica dei plugin. Chi ci scrive davvero (tee, cp, rm, sed -i, `>`) resta visto.
-        if not any(f in CODICE_INLINE_FLAGS or re.fullmatch(r"-[a-zA-Z]*[ce]", f) for f in flags):
-            operands = [a for a in operands if not dati_di_plugin(a)]
+        # A script that receives the path of a plugin log reads it: `.claude/plugins/data/`
+        # is the plugins' data (logs, state), not their code. False positive of
+        # 2026-10-07: `node join.ts ~/.claude/plugins/data/…/log.jsonl` denied as a
+        # modification of the plugins. Whoever really writes there (tee, cp, rm, sed -i, `>`) is still seen.
+        if not any(f in INLINE_CODE_FLAGS or re.fullmatch(r"-[a-zA-Z]*[ce]", f) for f in flags):
+            operands = [a for a in operands if not plugin_data(a)]
     return targets + operands
 
 
 def secret_names(values: list[str]) -> list[str]:
-    """I nomi di file di segreti fra `values`, esclusi i template (.env.example)."""
+    """The secret file names among `values`, templates excluded (.env.example)."""
     return [
         m.group(0)
         for value in values
@@ -695,31 +696,31 @@ def secret_names(values: list[str]) -> list[str]:
 
 
 def file_operands(segment: str) -> list[str]:
-    """Gli operandi che il comando tratta come file, senza il pattern di grep/sed/awk."""
-    tokens = senza_prefissi(shell_tokens(segment))
+    """The operands the command treats as files, without the grep/sed/awk pattern."""
+    tokens = without_prefixes(shell_tokens(segment))
     if not tokens:
         return []
     args = tokens[1:]
     if os.path.basename(tokens[0]) not in PATTERN_COMMANDS:
         return [a for a in args if not a.startswith("-")]
     operands: list[str] = []
-    pattern_da_flag = salta = False
+    pattern_from_flag = skip = False
     for arg in args:
-        if salta:
-            salta = False
+        if skip:
+            skip = False
             continue
         if not arg.startswith("-"):
             operands.append(arg)
         elif arg.split("=", 1)[0] in PATTERN_FLAGS or PATTERN_SHORT_FLAG.fullmatch(arg):
-            pattern_da_flag = True
-            # Il valore di -e è il pattern (`sed -e "s/x/os.environ['A']/"`): non è un
-            # file. Quello di -f sì, e si legge.
-            salta = "=" not in arg and (arg in ("--regexp", "--expression") or (arg[1] != "-" and arg.endswith("e")))
-    return operands if pattern_da_flag else operands[1:]
+            pattern_from_flag = True
+            # The value of -e is the pattern (`sed -e "s/x/os.environ['A']/"`): it is not
+            # a file. The value of -f is, and it gets read.
+            skip = "=" not in arg and (arg in ("--regexp", "--expression") or (arg[1] != "-" and arg.endswith("e")))
+    return operands if pattern_from_flag else operands[1:]
 
 
 def check_secret_reads(text: str) -> None:
-    """Blocca `cat .env` e affini: permissions.deny copre il tool Read, non la shell."""
+    """Blocks `cat .env` and the like: permissions.deny covers the Read tool, not the shell."""
     for segment in shell_segments(text):
         found = secret_names(file_operands(segment))
         written = secret_names(redirect_targets(segment))
@@ -727,25 +728,25 @@ def check_secret_reads(text: str) -> None:
             continue
         if found and SECRET_READERS.search(segment):
             deny(
-                f"lettura di un file di segreti da shell ({found[0]}): il contenuto finirebbe "
-                "nella trascrizione, che resta su disco. Per il nome di una variabile leggi "
-                ".env.example; per il valore, chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
+                f"read of a secret file from the shell ({found[0]}): the content would end up "
+                "in the transcript, which stays on disk. For a variable's name read "
+                ".env.example; for its value, ask the user. (guardrail: filesystem-shell-secrets.md)"
             )
         if found and SECRET_SOURCERS.search(segment):
             ask(
-                f"source di un file di segreti ({found[0]}): carica credenziali nell'ambiente "
-                "del comando. Conferma che è voluto?"
+                f"source of a secret file ({found[0]}): loads credentials into the command's "
+                "environment. Confirm it is intended?"
             )
-        # cp/mv/ln restano presi in *entrambe* le direzioni: `cp .env x && cat x`
-        # ricicla il nome. Le redirezioni no: contano solo se scrivono sul segreto.
+        # cp/mv/ln are still caught in *both* directions: `cp .env x && cat x`
+        # recycles the name. Redirections are not: they count only if they write to the secret.
         if written or (found and SHELL_WRITER_CMDS.search(segment)):
             name = (written + found)[0]
-            ask(f"scrittura da shell su un file di segreti ({name}). Conferma che è voluto e che il file è gitignorato.")
+            ask(f"shell write to a secret file ({name}). Confirm it is intended and that the file is gitignored.")
 
 
 def removed_paths(segment: str) -> list[str]:
-    """I file che il comando toglie dal loro posto: rm e unlink, la sorgente di mv, git rm/mv."""
-    tokens = senza_prefissi(shell_tokens(segment))
+    """The files the command takes away from their place: rm and unlink, the source of mv, git rm/mv."""
+    tokens = without_prefixes(shell_tokens(segment))
     if not tokens:
         return []
     command, args = os.path.basename(tokens[0]), tokens[1:]
@@ -763,340 +764,339 @@ def removed_paths(segment: str) -> list[str]:
     return []
 
 
-SPEGNE_GUARDRAIL = "è il file che accende guardrail nel suo progetto"
+TURNS_GUARDRAIL_OFF = "is the file that turns guardrail on in its project"
 
 
-def nome_guardrail(nome: str) -> bool:
-    """`nome` indica .guardrail.json, anche come glob (`.guardrail*`, `.[!.]*`) o con
-    maiuscole diverse. Come in bash, un glob che non comincia con il punto non
-    prende i file nascosti: `rm *.json` non lo tocca."""
-    nome = nome.lower()
-    return nome.startswith(".") and fnmatch.fnmatchcase(".guardrail.json", nome)
+def guardrail_name(name: str) -> bool:
+    """`name` denotes .guardrail.json, also as a glob (`.guardrail*`, `.[!.]*`) or with
+    different case. As in bash, a glob that does not start with the dot does not
+    take hidden files: `rm *.json` does not touch it."""
+    name = name.lower()
+    return name.startswith(".") and fnmatch.fnmatchcase(".guardrail.json", name)
 
 
-def percorso(raw: str, cwd: str) -> Path:
+def as_path(raw: str, cwd: str) -> Path:
     path = Path(os.path.expanduser(raw.strip("\"'")))
     return path if path.is_absolute() else Path(cwd or os.getcwd()) / path
 
 
-def contiene_guardrail(base: Path, profondita: int = 2) -> bool:
-    """`base` è una directory con un .guardrail.json, fino a `profondita` livelli sotto?"""
+def contains_guardrail(base: Path, depth: int = 2) -> bool:
+    """Is `base` a directory with a .guardrail.json, up to `depth` levels below?"""
     try:
         if base.is_symlink() or not base.is_dir():
             return False
         if os.path.lexists(base / ".guardrail.json"):
             return True
-        if profondita == 0:
+        if depth == 0:
             return False
-        with os.scandir(base) as voci:
-            for indice, voce in enumerate(voci):
-                if indice > 500:
+        with os.scandir(base) as entries:
+            for index, entry in enumerate(entries):
+                if index > 500:
                     break
-                if voce.name in ("node_modules", "vendor", ".git", ".venv", "venv"):
+                if entry.name in ("node_modules", "vendor", ".git", ".venv", "venv"):
                     continue
-                if voce.is_dir(follow_symlinks=False) and contiene_guardrail(Path(voce.path), profondita - 1):
+                if entry.is_dir(follow_symlinks=False) and contains_guardrail(Path(entry.path), depth - 1):
                     return True
     except OSError:
         return False
     return False
 
 
-def operando_vuoto(raw: str) -> bool:
-    """Un operando che, tolte virgolette e backslash, non nomina niente.
+def empty_operand(raw: str) -> bool:
+    """An operand that, quotes and backslashes removed, names nothing.
 
-    È il resto di una riga spezzata male: in `rm -f "${D}/v*" "$(f)/x"` (nvm.sh)
-    dividere su `$(` lascia un `"` orfano, che come path è la directory di lavoro.
-    Così `source ~/.nvm/nvm.sh` era negato come se cancellasse il progetto.
+    It is the remainder of a badly split line: in `rm -f "${D}/v*" "$(f)/x"` (nvm.sh)
+    splitting on `$(` leaves an orphan `"`, which as a path is the working directory.
+    So `source ~/.nvm/nvm.sh` was denied as if it deleted the project.
     """
     return not raw.strip("\"'\\ \t")
 
 
-def radici_temporanee() -> list[Path]:
-    """Le cartelle temporanee di sistema e della sessione. Mai `/`: con TMPDIR=/
-    tutto sarebbe una copia. La home la esclude `copia_temporanea`."""
-    candidati = [Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())]
-    candidati += [Path(os.environ[k]) for k in ("TMPDIR", "TMP", "TEMP") if os.environ.get(k)]
-    radici: list[Path] = []
-    for candidato in candidati:
+def temp_roots() -> list[Path]:
+    """The system's and the session's temporary folders. Never `/`: with TMPDIR=/
+    everything would be a copy. The home is excluded by `temp_copy`."""
+    candidates = [Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())]
+    candidates += [Path(os.environ[k]) for k in ("TMPDIR", "TMP", "TEMP") if os.environ.get(k)]
+    roots: list[Path] = []
+    for candidate in candidates:
         try:
-            reale = candidato.resolve()
+            real = candidate.resolve()
         except (OSError, RuntimeError):
             continue
-        if reale != Path(reale.anchor) and reale not in radici:
-            radici.append(reale)
-    return radici
+        if real != Path(real.anchor) and real not in roots:
+            roots.append(real)
+    return roots
 
 
-def copia_temporanea(cartella: Path, cwd: str) -> bool:
-    """`cartella` è una copia in una cartella temporanea che questa sessione non usa?
+def temp_copy(folder: Path, cwd: str) -> bool:
+    """Is `folder` a copy in a temporary folder that this session does not use?
 
-    Una copia del progetto in /tmp (`git checkout-index`, `git archive`, `cp -r`)
-    si porta dietro il suo .guardrail.json e il suo .claude/, che però non accendono
-    né configurano niente: toglierli o riscriverli non spegne guardrail. Lo
-    spegnerebbe solo se la directory di lavoro o il progetto della sessione ci
-    stessero dentro, e lì il controllo resta. La home non è mai una copia, anche se
-    sta sotto /tmp (i test ne creano una finta). Falso positivo del 2026-10-04:
-    `rm -rf /tmp/claude-1000/tmp.X` negato per la copia che conteneva.
+    A copy of the project in /tmp (`git checkout-index`, `git archive`, `cp -r`)
+    carries its .guardrail.json and its .claude/ along, which however turn on and
+    configure nothing: removing or rewriting them does not turn guardrail off. It
+    would only if the working directory or the session's project were inside it,
+    and there the check stays. The home is never a copy, even if it sits under /tmp
+    (the tests create a fake one). False positive of 2026-10-04:
+    `rm -rf /tmp/claude-1000/tmp.X` denied for the copy it contained.
     """
     try:
-        reale = cartella.resolve()
+        real = folder.resolve()
         home = Path.home().resolve()
     except (OSError, RuntimeError):
         return False
-    if is_inside(reale, home):
+    if is_inside(real, home):
         return False
-    if not any(reale != radice and is_inside(reale, radice) for radice in radici_temporanee()):
+    if not any(real != root and is_inside(real, root) for root in temp_roots()):
         return False
-    sessione = [cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")]
-    return not any(dove and is_inside(Path(dove), reale) for dove in sessione)
+    session = [cwd or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")]
+    return not any(where and is_inside(Path(where), real) for where in session)
 
 
-def cartella_governata(path: Path) -> Path:
-    """La cartella su cui agisce un file di configurazione: quella che contiene il
-    .guardrail.json, o il progetto che contiene il .claude/ (vale il più interno)."""
-    parti = path.parts
-    if ".claude" in parti[:-1]:
-        return Path(*parti[: len(parti) - 1 - parti[::-1].index(".claude")])
+def governed_folder(path: Path) -> Path:
+    """The folder a configuration file acts on: the one containing the
+    .guardrail.json, or the project containing the .claude/ (the innermost counts)."""
+    parts = path.parts
+    if ".claude" in parts[:-1]:
+        return Path(*parts[: len(parts) - 1 - parts[::-1].index(".claude")])
     return path.parent
 
 
-def link_al_guardrail(segment: str) -> bool:
-    """`ln` o `cp -l/-s` con .guardrail.json fra gli operandi: un secondo nome per il file."""
-    tokens = senza_prefissi(shell_tokens(segment))
+def link_to_guardrail(segment: str) -> bool:
+    """`ln` or `cp -l/-s` with .guardrail.json among the operands: a second name for the file."""
+    tokens = without_prefixes(shell_tokens(segment))
     if not tokens:
         return False
     command, args = os.path.basename(tokens[0]), tokens[1:]
-    collega = command == "ln" or (
+    links = command == "ln" or (
         command == "cp" and any(a in ("-l", "-s", "--link", "--symbolic-link") or re.match(r"^-[a-zA-Z]*[ls]", a) for a in args)
     )
-    return collega and any(nome_guardrail(Path(a).name) for a in args if not a.startswith("-"))
+    return links and any(guardrail_name(Path(a).name) for a in args if not a.startswith("-"))
 
 
-def modifica_protetta(match: re.Match) -> None:
+def protected_change(match: re.Match) -> None:
     path = match.group("path")
     if match.group("plugin"):
         deny(
-            f"modifica da shell di {path}: è il codice dei hook e dei plugin di Claude Code, "
-            "cioè di guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+            f"shell modification of {path}: it is the code of the Claude Code hooks and plugins, "
+            "that is of guardrail itself. It is updated with /plugin, never by hand by the agent. (guardrail: RULES-CORE.md 8)"
         )
     ask(
-        f"modifica da shell di {path}: cambia le regole che vincolano l'agente o le impostazioni "
-        "dell'utente. Decide l'utente. (guardrail: RULES-CORE.md 8)"
+        f"shell modification of {path}: changes the rules that bind the agent or the user's "
+        "settings. The user decides. (guardrail: RULES-CORE.md 8)"
     )
 
 
-def giudica_codice_inline(text: str) -> str:
-    """Il codice di `node -e` e `python3 -c` si giudica intero, e poi si toglie.
+def judge_inline_code(text: str) -> str:
+    """The code of `node -e` and `python3 -c` is judged whole, and then removed.
 
-    shell_segments non guarda le virgolette: le parentesi e i `;` del codice
-    spezzerebbero la riga a metà, e un path letto dentro `require(…)` sembrerebbe
-    un operando di node, cioè un bersaglio. È il falso positivo del 2026-10-04 su
-    `.claude/plugins/known_marketplaces.json`. Se il codice scrive o lancia
-    processi, i path protetti che nomina sono bersagli; se no, non ne ha.
+    shell_segments does not look at quotes: the parentheses and the `;` of the code
+    would split the line in half, and a path read inside `require(…)` would look like
+    an operand of node, that is a target. It is the false positive of 2026-10-04 on
+    `.claude/plugins/known_marketplaces.json`. If the code writes or launches
+    processes, the protected paths it names are targets; if not, it has none.
 
-    Resta nella riga solo fra virgolette doppie con dentro `$(` o un backtick: quelli
-    li esegue la shell, prima di passare il testo all'interprete. E resta se node o
-    python non sono davvero il comando, letto con le virgolette: in
-    `tee "; python3 -c '" .guardrail.json "'"` il comando è tee, e scrive su
+    It stays in the line only between double quotes with `$(` or a backtick inside:
+    the shell runs those, before passing the text to the interpreter. And it stays if
+    node or python are not really the command, read with the quotes: in
+    `tee "; python3 -c '" .guardrail.json "'"` the command is tee, and it writes to
     .guardrail.json.
     """
 
-    def giudica(m: re.Match) -> str:
-        codice = m.group("code")
-        if codice.startswith('"') and ("$(" in codice or "`" in codice):
+    def judge(m: re.Match) -> str:
+        code = m.group("code")
+        if code.startswith('"') and ("$(" in code or "`" in code):
             return m.group(0)
-        comando = comando_finale(m.string[: m.start("code")])
+        command = final_command(m.string[: m.start("code")])
         if (
-            comando is None
-            or not re.fullmatch(r"node|python[\d.]*", comando[0])
-            or not comando[1]
-            or not CODE_FLAG.fullmatch(comando[1][-1])
+            command is None
+            or not re.fullmatch(r"node|python[\d.]*", command[0])
+            or not command[1]
+            or not CODE_FLAG.fullmatch(command[1][-1])
             or m.string[m.end():m.end() + 1] not in ("", " ", "\t", "\n", ";", "&", "|", ")")
         ):
             return m.group(0)
-        if CODE_WRITES.search(codice) or SPAWNS_PROCESS.search(codice):
-            for match in PROTECTED_PATH.finditer(codice):
-                modifica_protetta(match)
+        if CODE_WRITES.search(code) or SPAWNS_PROCESS.search(code):
+            for match in PROTECTED_PATH.finditer(code):
+                protected_change(match)
         return m.group(0)[: m.start("code") - m.start()] + "''"
 
-    return INLINE_CODE.sub(giudica, text)
+    return INLINE_CODE.sub(judge, text)
 
 
 def check_protected_writes(text: str, cwd: str = "") -> None:
-    """Scritture e rimozioni dei file che governano guardrail e Claude Code.
+    """Writes and removals of the files that govern guardrail and Claude Code.
 
-    I segmenti sono due serie. Prima quelli di shell_segments, che taglia a ogni `;`,
-    `|` o `)` anche fra virgolette. Poi quelli che vede la shell (segmenti_veri): in
-    `tee "; x" .guardrail.json` il taglio cieco lascia `x" .guardrail.json`, senza
-    comando, e la scrittura di tee sparisce. Una serie in più può solo aggiungere
-    conferme e blocchi, mai toglierne.
+    The segments are two series. First those of shell_segments, which cuts at every `;`,
+    `|` or `)` even between quotes. Then those the shell sees (real_segments): in
+    `tee "; x" .guardrail.json` the blind cut leaves `x" .guardrail.json`, without a
+    command, and tee's write disappears. An extra series can only add
+    confirmations and blocks, never remove them.
     """
-    text = giudica_codice_inline(text)
-    for segment in shell_segments(text) + (segmenti_veri(text) or []):
-        tolto = None
+    text = judge_inline_code(text)
+    for segment in shell_segments(text) + (real_segments(text) or []):
+        removed = None
         for raw in removed_paths(segment):
-            if operando_vuoto(raw):
+            if empty_operand(raw):
                 continue
-            if nome_guardrail(Path(raw).name):
-                if not copia_temporanea(percorso(raw, cwd).parent, cwd):
-                    tolto = raw
-            elif not any(c in raw for c in "*?[") and contiene_guardrail(percorso(raw, cwd)):
-                if not copia_temporanea(percorso(raw, cwd), cwd):
-                    tolto = f"{raw}, che contiene un .guardrail.json"
-            if tolto:
+            if guardrail_name(Path(raw).name):
+                if not temp_copy(as_path(raw, cwd).parent, cwd):
+                    removed = raw
+            elif not any(c in raw for c in "*?[") and contains_guardrail(as_path(raw, cwd)):
+                if not temp_copy(as_path(raw, cwd), cwd):
+                    removed = f"{raw}, which contains a .guardrail.json"
+            if removed:
                 break
-        if tolto is None and "guardrail" in segment.lower() and FIND_DELETE.search(segment):
-            tolto = "un .guardrail.json (find … -delete)"
-        if tolto:
+        if removed is None and "guardrail" in segment.lower() and FIND_DELETE.search(segment):
+            removed = "a .guardrail.json (find … -delete)"
+        if removed:
             deny(
-                f"rimozione di {tolto}: {SPEGNE_GUARDRAIL}, toglierlo lo spegne. Spegnerlo è una "
-                "decisione dell'utente, che lo fa da sé. Se una regola ti blocca a torto, spiegalo "
-                "all'utente. (guardrail: RULES-CORE.md 8)"
+                f"removal of {removed}: {TURNS_GUARDRAIL_OFF}, removing it turns it off. Turning it off is "
+                "the user's decision, and they do it themselves. If a rule blocks you wrongly, explain it "
+                "to the user. (guardrail: RULES-CORE.md 8)"
             )
-        if link_al_guardrail(segment):
+        if link_to_guardrail(segment):
             deny(
-                "un link a .guardrail.json gli darebbe un secondo nome, da cui riscriverlo senza passare "
-                "dalla conferma. Se serve una copia, usa cp senza -l/-s. (guardrail: RULES-CORE.md 8)"
+                "a link to .guardrail.json would give it a second name, from which to rewrite it without going "
+                "through the confirmation. If a copy is needed, use cp without -l/-s. (guardrail: RULES-CORE.md 8)"
             )
         for target in write_targets(segment):
-            if operando_vuoto(target):
+            if empty_operand(target):
                 continue
-            # Anche dove porta: `note.json` può essere un link a .guardrail.json.
+            # Also where it leads: `note.json` can be a link to .guardrail.json.
             try:
-                reale = percorso(target, cwd).resolve()
+                real = as_path(target, cwd).resolve()
             except (OSError, RuntimeError):
-                reale = None
+                real = None
             match = PROTECTED_PATH.search(target)
-            if not match and cwd and reale is not None:
-                match = PROTECTED_PATH.search(str(reale))
+            if not match and cwd and real is not None:
+                match = PROTECTED_PATH.search(str(real))
             if not match:
                 continue
-            # Il nome e dove porta, tutti e due: un link in /tmp può portare al progetto,
-            # e il .guardrail.json di un progetto può essere un link verso /tmp.
-            if reale is not None and all(
-                copia_temporanea(cartella_governata(p), cwd) for p in (percorso(target, cwd), reale)
+            # The name and where it leads, both: a link in /tmp can lead to the project,
+            # and a project's .guardrail.json can be a link towards /tmp.
+            if real is not None and all(
+                temp_copy(governed_folder(p), cwd) for p in (as_path(target, cwd), real)
             ):
                 continue
-            modifica_protetta(match)
+            protected_change(match)
 
 
 # ---------------------------------------------------------------------------
-# Bash: heredoc e script invocati
+# Bash: heredocs and invoked scripts
 # ---------------------------------------------------------------------------
 
-# Un heredoc che scrive su file (cat > x <<EOF, tee x <<EOF) contiene dati, non
-# comandi: citare `git push --force` in un README non è eseguirlo. Un heredoc che
-# alimenta un interprete (bash <<EOF, python - <<PY) resta comandi e non si tocca.
-# Testa di un heredoc che *archivia* il corpo invece di eseguirlo. Due forme:
-#   redirezione o tee     `cat > docs/git.md <<EOF`
-#   git/gh che legge -    `git commit -F - <<EOF`, `gh issue create --body-file - <<EOF`
-# git e gh con `-F -` prendono lo stdin come testo da archiviare, mai da eseguire:
-# un messaggio di commit che *descrive* un comando bloccato non lo esegue, ed è la
-# forma normale in cui questo repo documenta i propri blocchi. `bash <<EOF` resta
-# fuori, e il suo corpo continua a essere analizzato. La riga di testa e tutto ciò
-# che segue il tag di chiusura restano comunque analizzati, in ogni caso.
+# A heredoc that writes to a file (cat > x <<EOF, tee x <<EOF) contains data, not
+# commands: quoting `git push --force` in a README is not running it. A heredoc that
+# feeds an interpreter (bash <<EOF, python - <<PY) remains commands and is left alone.
+# Head of a heredoc that *archives* the body instead of running it. Two forms:
+#   redirection or tee     `cat > docs/git.md <<EOF`
+#   git/gh reading -       `git commit -F - <<EOF`, `gh issue create --body-file - <<EOF`
+# git and gh with `-F -` take stdin as text to archive, never to run:
+# a commit message that *describes* a blocked command does not run it, and it is the
+# normal form in which this repo documents its own blocks. `bash <<EOF` stays
+# out, and its body keeps being analysed. The head line and everything that
+# follows the closing tag remain analysed anyway, in every case.
 #
-# *Chi* riceve l'heredoc si decide come lo decide la shell: la riga fino a `<<`
-# si legge con le virgolette (shlex), e conta il primo comando del segmento che
-# contiene `<<`, tolti i prefissi. Una regex sulla riga non basta: in
-# `bash -s "; python3 x" <<'EOF'` il `;` sta dentro una stringa, e il corpo lo
-# esegue bash. Se la riga non si legge (virgolette spaiate, `<<` dentro una
-# stringa, `<<<`), il corpo resta analizzato. Un `(` o un backtick prima di `<<`
-# apre un altro comando (`tee >(bash) <<EOF`, `python3 $(bash <<EOF …)`): lì chi
-# riceve non si sa, e il corpo resta analizzato.
+# *Who* receives the heredoc is decided the way the shell decides it: the line up to `<<`
+# is read with its quotes (shlex), and what counts is the first command of the segment
+# containing `<<`, prefixes removed. A regex on the line is not enough: in
+# `bash -s "; python3 x" <<'EOF'` the `;` sits inside a string, and the body is
+# run by bash. If the line cannot be read (unpaired quotes, `<<` inside a
+# string, `<<<`), the body remains analysed. A `(` or a backtick before `<<`
+# opens another command (`tee >(bash) <<EOF`, `python3 $(bash <<EOF …)`): there the
+# receiver is unknown, and the body remains analysed.
 #
-# Un heredoc di dati è tale solo se nessuno riesegue ciò che scrive: `cat > x <<EOF
-# | bash` e `tee x <<EOF | bash` passano il corpo a una shell. E con il tag senza
-# virgolette `$(…)` e i backtick nel corpo li esegue la shell, prima di tutto.
+# A data heredoc is such only if nobody re-runs what it writes: `cat > x <<EOF
+# | bash` and `tee x <<EOF | bash` pass the body to a shell. And with the tag unquoted,
+# `$(…)` and the backticks in the body are run by the shell, before anything else.
 HEREDOC = re.compile(
-    r"(?P<head>^(?P<prima>[^\n]*?)(?<!<)<<(?!<)-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)(?P<dopo>[^\n]*)\n)"
+    r"(?P<head>^(?P<before>[^\n]*?)(?<!<)<<(?!<)-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)(?P<after>[^\n]*)\n)"
     r"(?P<body>.*?)(?P<end>^\s*(?P=tag)\s*$)",
     re.M | re.S,
 )
 GIT_STDIN_FLAGS = ("-F", "--file", "--body-file", "--notes-file")
 
 
-def riscrivi_heredoc(text: str, da_tagliare) -> str:
-    """Toglie il corpo degli heredoc per cui `da_tagliare(m, ricevente)` è vero.
+def rewrite_heredoc(text: str, should_cut) -> str:
+    """Removes the body of the heredocs for which `should_cut(m, receiver)` is true.
 
-    Il ricevente si legge dal comando *intero* fino a `<<`, non dalla sola riga:
-    una riga che sembra `python3 - <<EOF` può stare dentro una stringa aperta più
-    su (`X='` a capo), e allora non è un heredoc e il testo che segue lo esegue la
-    shell. I corpi degli heredoc già incontrati non contano per le virgolette: la
-    shell non li interpreta, e un apostrofo dentro un testo non apre niente.
-    Se il ricevente non si sa, il corpo resta.
+    The receiver is read from the *whole* command up to `<<`, not from the line alone:
+    a line that looks like `python3 - <<EOF` can sit inside a string opened higher
+    up (`X='` newline), and then it is not a heredoc and the text that follows is run
+    by the shell. The bodies of the heredocs already met do not count for the quotes:
+    the shell does not interpret them, and an apostrophe inside a text opens nothing.
+    If the receiver is unknown, the body stays.
     """
-    pezzi: list[str] = []
-    struttura: list[str] = []
+    pieces: list[str] = []
+    structure: list[str] = []
     pos = 0
     for m in HEREDOC.finditer(text):
-        fuori = text[pos:m.start()]
-        pezzi.append(fuori)
-        struttura.append(fuori)
-        ricevente = comando_finale("".join(struttura) + m.group("prima"))
-        taglia = ricevente is not None and da_tagliare(m, ricevente)
-        # Con il tag senza virgolette la shell esegue `$(…)` e i backtick del corpo
-        # prima di darlo a chiunque: tolto il corpo, restano le sostituzioni.
-        residuo = "" if m.group("q") else "".join(f"$({s})\n" for s in sostituzioni_di_shell(m.group("body")))
-        pezzi.append(m.group("head") + residuo + m.group("end") if taglia else m.group(0))
-        struttura.append(m.group("head") + m.group("end") if ricevente is not None else m.group(0))
+        outside = text[pos:m.start()]
+        pieces.append(outside)
+        structure.append(outside)
+        receiver = final_command("".join(structure) + m.group("before"))
+        cut = receiver is not None and should_cut(m, receiver)
+        # With the tag unquoted the shell runs the `$(…)` and the backticks of the body
+        # before handing it to anyone: body removed, the substitutions remain.
+        residue = "" if m.group("q") else "".join(f"$({s})\n" for s in shell_substitutions(m.group("body")))
+        pieces.append(m.group("head") + residue + m.group("end") if cut else m.group(0))
+        structure.append(m.group("head") + m.group("end") if receiver is not None else m.group(0))
         pos = m.end()
-    pezzi.append(text[pos:])
-    return "".join(pezzi)
+    pieces.append(text[pos:])
+    return "".join(pieces)
 
 
-def espande_sostituzioni(m: re.Match) -> bool:
-    """Tag senza virgolette e un `$` o un backtick nel corpo: la shell espande il corpo
-    prima di passarlo a chiunque, e le forme di espansione sono più di `$(…)`. Il
-    corpo allora non si toglie, resta analizzato per intero. Le sostituzioni che
-    riscrivi_heredoc estrae sono un controllo in più, non questo: se l'estrazione ne
-    perdesse una, il corpo intero la mostra comunque."""
-    corpo = m.group("body")
-    return not m.group("q") and ("$" in corpo or "`" in corpo)
+def expands_substitutions(m: re.Match) -> bool:
+    """Unquoted tag and a `$` or a backtick in the body: the shell expands the body
+    before passing it to anyone, and the forms of expansion are more than `$(…)`. The
+    body is then not removed, it remains analysed in full. The substitutions that
+    rewrite_heredoc extracts are an extra check, not this one: if the extraction
+    missed one, the whole body shows it anyway."""
+    body = m.group("body")
+    return not m.group("q") and ("$" in body or "`" in body)
 
 
-def heredoc_di_dati(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
-    """`cat > x <<EOF`, `tee x <<EOF`, `git commit -F - <<EOF`: il corpo si archivia."""
-    # `tee x <<'EOF' >(bash)`: tee scrive anche nella process substitution.
-    if "|" in m.group("dopo") or ">(" in m.group("dopo"):
+def data_heredoc(m: re.Match, receiver: tuple[str, list[str], bool]) -> bool:
+    """`cat > x <<EOF`, `tee x <<EOF`, `git commit -F - <<EOF`: the body is archived."""
+    # `tee x <<'EOF' >(bash)`: tee also writes into the process substitution.
+    if "|" in m.group("after") or ">(" in m.group("after"):
         return False
-    if espande_sostituzioni(m):
+    if expands_substitutions(m):
         return False
-    nome, args, uscita = ricevente
-    if nome == "cat":
-        return uscita
-    if nome == "tee":
+    name, args, output = receiver
+    if name == "cat":
+        return output
+    if name == "tee":
         return True
-    if nome in ("git", "gh"):
+    if name in ("git", "gh"):
         return any(
             (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
             for i, a in enumerate(args)
         )
     return False
 
-# Heredoc che alimenta un interprete NON-shell: `python3 - <<PY`, `node <<JS`.
-# Il corpo sono comandi — per quell'interprete, non per la shell.
+# Heredoc feeding a NON-shell interpreter: `python3 - <<PY`, `node <<JS`.
+# The body is commands — for that interpreter, not for the shell.
 #
-# Le regole built-in lo vedono solo se quel codice può arrivare alla shell: se
-# lancia processi (`os.system("rm -rf ...")`, `subprocess`, `child_process`), se
-# l'interprete è Ruby, Perl o PHP (lì `system "…"` e i backtick eseguono senza
-# parentesi), o se il tag non è fra virgolette e il corpo contiene `$(` o un
-# backtick, che la shell esegue *prima* di passare il testo all'interprete.
-# Altrimenti un testo citato in un letterale Python non è un comando: uno script
-# che corregge un README con dentro `find . -delete` o `base64 -d x | sh` veniva
-# fermato come se li eseguisse. Falso positivo del 2026-10-03/04.
+# The built-in rules see it only if that code can reach the shell: if it
+# launches processes (`os.system("rm -rf ...")`, `subprocess`, `child_process`), if
+# the interpreter is Ruby, Perl or PHP (there `system "…"` and backticks run without
+# parentheses), or if the tag is unquoted and the body contains `$(` or a
+# backtick, which the shell runs *before* passing the text to the interpreter.
+# Otherwise a text quoted in a Python literal is not a command: a script
+# that fixes a README with `find . -delete` or `base64 -d x | sh` inside was
+# stopped as if it ran them. False positive of 2026-10-03/04.
 #
-# Le regex di PROGETTO tagliano invece sempre il corpo.
-# Sono stringhe arbitrarie (un path, un flag) scritte per intercettare un comando
-# della shell: incontrate dentro un letterale Python descrivono, non eseguono.
-# Il 2026-09-18 `ask_commands: ["scripts/clone-prod-to-dev\\.sh"]` ha fatto
-# scattare la conferma su uno script che quel path lo stampava soltanto, e la
-# gemella in `deny_commands` ha bloccato lo script che stava diagnosticando il
-# guard — lo stesso falso positivo del 2026-09-17, spostato dalle regole built-in
-# a quelle di progetto.
+# The PROJECT regexes instead always cut the body.
+# They are arbitrary strings (a path, a flag) written to intercept a shell
+# command: met inside a Python literal they describe, they do not run.
+# On 2026-09-18 `ask_commands: ["scripts/clone-prod-to-dev\\.sh"]` triggered the
+# confirmation on a script that merely printed that path, and its twin in
+# `deny_commands` blocked the script that was diagnosing the guard — the same
+# false positive of 2026-09-17, moved from the built-in rules to the project ones.
 #
-# `bash`/`sh`/`zsh` restano fuori: lì il corpo è shell per davvero, e le regex di
-# progetto devono vederlo.
+# `bash`/`sh`/`zsh` stay out: there the body is shell for real, and the project
+# regexes must see it.
 INTERPRETERS = re.compile(r"python[\d.]*|node|ruby|perl|php|Rscript")
 INTERPRETERS_WITHOUT_SHELL = re.compile(r"python[\d.]*|node|Rscript")
 
@@ -1110,142 +1110,141 @@ SCRIPT_SOURCED = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(?P<path>[^\s;&|(
 
 
 def strip_data_heredocs(text: str) -> str:
-    return riscrivi_heredoc(text, heredoc_di_dati)
+    return rewrite_heredoc(text, data_heredoc)
 
 
 def strip_interpreter_heredocs(text: str) -> str:
-    """Il testo su cui si applicano le REGEX DI PROGETTO, e solo quelle.
+    """The text the PROJECT REGEXES apply to, and only those.
 
-    Toglie il corpo degli heredoc diretti a un interprete non-shell. La riga di
-    testa resta: `python3 - <<PY` continua a essere un comando, e se la testa
-    contiene il pattern cercato la regola scatta come prima.
+    Removes the body of the heredocs directed to a non-shell interpreter. The head
+    line stays: `python3 - <<PY` is still a command, and if the head contains the
+    pattern looked for, the rule triggers as before.
 
-    Per le regole built-in c'è `strip_inert_heredocs`, che taglia di meno.
+    For the built-in rules there is `strip_inert_heredocs`, which cuts less.
     """
-    return riscrivi_heredoc(
+    return rewrite_heredoc(
         text,
-        lambda m, ricevente: INTERPRETERS.fullmatch(ricevente[0]) is not None and not stdin_a_una_shell(m, ricevente),
+        lambda m, receiver: INTERPRETERS.fullmatch(receiver[0]) is not None and not stdin_to_a_shell(m, receiver),
     )
 
 
 def strip_inert_heredocs(text: str) -> str:
-    """Il testo per le regole BUILT-IN: senza i corpi degli heredoc che non possono
-    arrivare alla shell (vedi il commento su HEREDOC)."""
+    """The text for the BUILT-IN rules: without the bodies of the heredocs that cannot
+    reach the shell (see the comment on HEREDOC)."""
 
-    def inerte(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
+    def inert(m: re.Match, receiver: tuple[str, list[str], bool]) -> bool:
         return (
-            INTERPRETERS_WITHOUT_SHELL.fullmatch(ricevente[0]) is not None
+            INTERPRETERS_WITHOUT_SHELL.fullmatch(receiver[0]) is not None
             and not SPAWNS_PROCESS.search(m.group("body"))
-            and not stdin_a_una_shell(m, ricevente)
-            and not espande_sostituzioni(m)
+            and not stdin_to_a_shell(m, receiver)
+            and not expands_substitutions(m)
         )
 
-    return riscrivi_heredoc(text, inerte)
+    return rewrite_heredoc(text, inert)
 
 
 # ---------------------------------------------------------------------------
-# Sostituzioni di comando (backtick, `$(…)`) e codice che lancia processi
+# Command substitutions (backtick, `$(…)`) and code that launches processes
 # ---------------------------------------------------------------------------
 
 
-def sostituzioni_di_shell(corpo: str) -> list[str]:
-    """I comandi che la shell esegue *dentro* il corpo di un heredoc con il tag senza
-    virgolette: `$(…)` e `` `…` ``. `\\$` e `` \\` `` sono escapati, le virgolette lì
-    dentro non contano. Un `$(` o un backtick che non si chiude prende il resto del
-    corpo: nel dubbio resta analizzato."""
-    trovati: list[str] = []
-    i, n = 0, len(corpo)
+def shell_substitutions(body: str) -> list[str]:
+    """The commands the shell runs *inside* the body of a heredoc with an unquoted
+    tag: `$(…)` and `` `…` ``. `\\$` and `` \\` `` are escaped, the quotes in there
+    do not count. A `$(` or a backtick that does not close takes the rest of the
+    body: when in doubt it remains analysed."""
+    found: list[str] = []
+    i, n = 0, len(body)
     while i < n:
-        c = corpo[i]
+        c = body[i]
         if c == "\\":
             i += 2
-        elif corpo.startswith("$(", i):
-            fine, profondita, citato = n, 1, ""
+        elif body.startswith("$(", i):
+            end, depth, quoted = n, 1, ""
             for j in range(i + 2, n):
-                k = corpo[j]
-                if citato:
-                    citato = "" if k == citato else citato
+                k = body[j]
+                if quoted:
+                    quoted = "" if k == quoted else quoted
                 elif k in "'\"":
-                    citato = k
+                    quoted = k
                 elif k == "(":
-                    profondita += 1
+                    depth += 1
                 elif k == ")":
-                    profondita -= 1
-                    if profondita == 0:
-                        fine = j
+                    depth -= 1
+                    if depth == 0:
+                        end = j
                         break
-            trovati.append(corpo[i + 2:fine])
-            i = fine + 1
+            found.append(body[i + 2:end])
+            i = end + 1
         elif c == "`":
             j = i + 1
-            while j < n and corpo[j] != "`":
-                j += 2 if corpo[j] == "\\" else 1
-            trovati.append(re.sub(r"\\([`$\\])", r"\1", corpo[i + 1:j]))
+            while j < n and body[j] != "`":
+                j += 2 if body[j] == "\\" else 1
+            found.append(re.sub(r"\\([`$\\])", r"\1", body[i + 1:j]))
             i = j + 1
         else:
             i += 1
-    return trovati
+    return found
 
 
-def _backtick_fuori(testo: str, tieni_apici: bool) -> str:
-    """`` `cmd` `` diventa `$(cmd)` fuori dalle virgolette singole e dai commenti.
-    Un backtick che non si chiude resta com'è."""
-    fuori: list[str] = []
-    i, n = 0, len(testo)
-    stato = ""
+def _backticks_outside(text: str, keep_quotes: bool) -> str:
+    """`` `cmd` `` becomes `$(cmd)` outside single quotes and comments.
+    A backtick that does not close stays as it is."""
+    outside: list[str] = []
+    i, n = 0, len(text)
+    state = ""
     while i < n:
-        c = testo[i]
-        if stato == "'":
-            stato = "" if c == "'" else stato
-            fuori.append(c)
+        c = text[i]
+        if state == "'":
+            state = "" if c == "'" else state
+            outside.append(c)
         elif c == "\\" and i + 1 < n:
-            fuori.append(testo[i:i + 2])
+            outside.append(text[i:i + 2])
             i += 1
-        elif c == "'" and tieni_apici and stato == "":
-            stato = "'"
-            fuori.append(c)
-        elif c == '"' and tieni_apici:
-            stato = "" if stato == '"' else ('"' if stato == "" else stato)
-            fuori.append(c)
-        elif c == "#" and stato == "" and tieni_apici and (not fuori or fuori[-1] in " \t\n;&|("):
-            fine = testo.find("\n", i)
-            fine = n if fine < 0 else fine
-            fuori.append(testo[i:fine])
-            i = fine - 1
+        elif c == "'" and keep_quotes and state == "":
+            state = "'"
+            outside.append(c)
+        elif c == '"' and keep_quotes:
+            state = "" if state == '"' else ('"' if state == "" else state)
+            outside.append(c)
+        elif c == "#" and state == "" and keep_quotes and (not outside or outside[-1] in " \t\n;&|("):
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            outside.append(text[i:end])
+            i = end - 1
         elif c == "`":
             j = i + 1
-            while j < n and testo[j] != "`":
-                j += 2 if testo[j] == "\\" else 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
             if j >= n:
-                fuori.append(testo[i:])
+                outside.append(text[i:])
                 break
-            dentro = re.sub(r"\\([`$\\])", r"\1", testo[i + 1:j])
-            fuori.append("$(" + _backtick_fuori(dentro, tieni_apici) + ")")
+            inside = re.sub(r"\\([`$\\])", r"\1", text[i + 1:j])
+            outside.append("$(" + _backticks_outside(inside, keep_quotes) + ")")
             i = j
         else:
-            fuori.append(c)
+            outside.append(c)
         i += 1
-    if stato == "'" and tieni_apici:
-        # Un apice che non si chiude: non si sa cosa sia citato, e si legge tutto.
-        return _backtick_fuori(testo, False)
-    return "".join(fuori)
+    if state == "'" and keep_quotes:
+        # A quote that does not close: nobody knows what is quoted, and everything is read.
+        return _backticks_outside(text, False)
+    return "".join(outside)
 
 
-def _riceve_dati(m: re.Match) -> bool:
-    """Il comando del segmento che contiene `<<` archivia il corpo invece di eseguirlo:
-    `cat`, `tee`, `git`/`gh` con `-F -`. Elenco chiuso di proposito: chi non c'è (una
-    shell in una forma non prevista, un lanciatore, un comando sconosciuto) potrebbe
-    eseguire il corpo, e i suoi backtick restano comandi. Lettura grossolana, che non
-    guarda le virgolette: serve solo a decidere se i backtick di un corpo citato sono
-    testo."""
-    prima = m.string[: m.start("head")] + m.group("prima")
-    parole = [p for p in re.split(r"\$\(|[`;|&({]", prima)[-1].split() if not re.fullmatch(r"\w+=\S*", p)]
-    if not parole:
+def _receives_data(m: re.Match) -> bool:
+    """The command of the segment containing `<<` archives the body instead of running it:
+    `cat`, `tee`, `git`/`gh` with `-F -`. Deliberately a closed list: whoever is not in it
+    (a shell in an unforeseen form, a launcher, an unknown command) could run the body,
+    and its backticks remain commands. A coarse read, which does not look at quotes: it
+    only serves to decide whether the backticks of a quoted body are text."""
+    before = m.string[: m.start("head")] + m.group("before")
+    words = [p for p in re.split(r"\$\(|[`;|&({]", before)[-1].split() if not re.fullmatch(r"\w+=\S*", p)]
+    if not words:
         return False
-    nome, args = parole[0], parole[1:]
-    if nome in ("cat", "tee"):
+    name, args = words[0], words[1:]
+    if name in ("cat", "tee"):
         return True
-    if nome in ("git", "gh"):
+    if name in ("git", "gh"):
         return any(
             (a in GIT_STDIN_FLAGS and i + 1 < len(args) and args[i + 1] == "-") or a in {f"{f}=-" for f in GIT_STDIN_FLAGS}
             for i, a in enumerate(args)
@@ -1253,151 +1252,151 @@ def _riceve_dati(m: re.Match) -> bool:
     return False
 
 
-def backtick_in_sostituzioni(text: str) -> str:
-    """Un comando dentro `` `…` `` lo esegue la shell come dentro `$(…)`, e le regole
-    sanno leggere solo `$(…)`: si riscrive. I corpi degli heredoc ancora presenti
-    (quelli che nessuno ha archiviato) si convertono senza guardare le virgolette:
-    sono testo di un altro linguaggio, e un apostrofo non deve nascondere un comando."""
+def backticks_to_substitutions(text: str) -> str:
+    """A command inside `` `…` `` is run by the shell like inside `$(…)`, and the rules
+    only know how to read `$(…)`: it is rewritten. The bodies of the heredocs still present
+    (those nobody archived) are converted without looking at quotes: they are text of
+    another language, and an apostrophe must not hide a command."""
     if "`" not in text:
         return text
-    pezzi: list[str] = []
+    pieces: list[str] = []
     pos = 0
     for m in HEREDOC.finditer(text):
-        pezzi.append(_backtick_fuori(text[pos:m.start("body")], True))
-        # Tag fra virgolette: la shell non espande niente. I backtick del corpo sono
-        # testo solo se lo riceve un comando che archivia (`cat`, anche dentro
-        # `"$(cat <<'EOF' …)"`); per chiunque altro restano comandi.
-        if m.group("q") and _riceve_dati(m):
-            pezzi.append(m.group("body"))
+        pieces.append(_backticks_outside(text[pos:m.start("body")], True))
+        # Quoted tag: the shell expands nothing. The backticks of the body are
+        # text only if it is received by a command that archives (`cat`, also inside
+        # `"$(cat <<'EOF' …)"`); for anyone else they remain commands.
+        if m.group("q") and _receives_data(m):
+            pieces.append(m.group("body"))
         else:
-            pezzi.append(_backtick_fuori(m.group("body"), False))
+            pieces.append(_backticks_outside(m.group("body"), False))
         pos = m.end("body")
-    pezzi.append(_backtick_fuori(text[pos:], True))
-    return "".join(pezzi)
+    pieces.append(_backticks_outside(text[pos:], True))
+    return "".join(pieces)
 
 
-# Lo stdin letto dal codice passato a `python3 -c` / `node -e`.
-STDIN_LETTO = re.compile(
+# Stdin read by the code passed to `python3 -c` / `node -e`.
+READS_STDIN = re.compile(
     r"\binput\s*\(|stdin|readFileSync\s*\(\s*0\b|/dev/stdin|\bopen\s*\(\s*0\b|readline|fileinput|\bfd\s*=\s*0\b"
 )
 
 
-# Il codice di `-c`/`-e` non si legge dagli argomenti di `comando_finale`: lì la
-# punteggiatura citata è mascherata. Se c'è un flag ma il testo non si trova, si
-# suppone il peggio: legge lo stdin e lancia processi.
-CODICE_IGNOTO = "input(stdin) system("
+# The code of `-c`/`-e` is not read from the arguments of `final_command`: there the
+# quoted punctuation is masked. If there is a flag but the text is not found, the
+# worst is assumed: it reads stdin and launches processes.
+UNKNOWN_CODE = "input(stdin) system("
 
 
-def _codice_inline(m: re.Match, args: list[str]) -> str | None:
-    """Il codice passato con `-c`/`-e` all'interprete che riceve l'heredoc `m`; None
-    se l'interprete legge un programma dallo stdin (`python3 -`, `node`)."""
+def _inline_code(m: re.Match, args: list[str]) -> str | None:
+    """The code passed with `-c`/`-e` to the interpreter that receives the heredoc `m`; None
+    if the interpreter reads a program from stdin (`python3 -`, `node`)."""
     if not any(CODE_FLAG.fullmatch(a) for a in args):
         return None
-    prima = m.string[: m.start("head")] + m.group("prima")
-    trovati = list(INLINE_CODE.finditer(prima))
-    if trovati and not prima[trovati[-1].end():].strip():
-        return trovati[-1].group("code")[1:-1]
-    return CODICE_IGNOTO
+    before = m.string[: m.start("head")] + m.group("before")
+    found = list(INLINE_CODE.finditer(before))
+    if found and not before[found[-1].end():].strip():
+        return found[-1].group("code")[1:-1]
+    return UNKNOWN_CODE
 
 
-def stdin_a_una_shell(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
-    """`python3 -c 'os.system(input())' <<EOF`: il codice legge lo stdin e lancia
-    processi, quindi il corpo dell'heredoc può essere un comando di shell. Resta
-    analizzato dalle regole della shell, tutto: non si indovina quale dei due sia."""
-    nome, args, _ = ricevente
-    if INTERPRETERS_WITHOUT_SHELL.fullmatch(nome) is None:
+def stdin_to_a_shell(m: re.Match, receiver: tuple[str, list[str], bool]) -> bool:
+    """`python3 -c 'os.system(input())' <<EOF`: the code reads stdin and launches
+    processes, so the heredoc body can be a shell command. It remains analysed by
+    the shell rules, in full: no guessing which of the two it is."""
+    name, args, _ = receiver
+    if INTERPRETERS_WITHOUT_SHELL.fullmatch(name) is None:
         return False
-    codice = _codice_inline(m, args)
-    return codice is not None and STDIN_LETTO.search(codice) is not None and SPAWNS_PROCESS.search(codice) is not None
+    code = _inline_code(m, args)
+    return code is not None and READS_STDIN.search(code) is not None and SPAWNS_PROCESS.search(code) is not None
 
 
-# --- stringhe che il codice passa a un lanciatore di processi ---------------
+# --- strings the code passes to a process launcher ---------------------------
 
-_PY_SEMPRE_SHELL = r"system|popen|getoutput|getstatusoutput|create_subprocess_shell"
-_PY_CON_SHELL = r"run|call|check_call|check_output|Popen"
-_JS_SEMPRE_SHELL = r"exec|execSync"
-_JS_CON_SHELL = r"spawn|spawnSync|execFile|execFileSync"
-_CHIAMATE = {
+_PY_ALWAYS_SHELL = r"system|popen|getoutput|getstatusoutput|create_subprocess_shell"
+_PY_WITH_SHELL = r"run|call|check_call|check_output|Popen"
+_JS_ALWAYS_SHELL = r"exec|execSync"
+_JS_WITH_SHELL = r"spawn|spawnSync|execFile|execFileSync"
+_CALLS = {
     False: re.compile(
-        rf"(?P<n>{_PY_SEMPRE_SHELL}|{_PY_CON_SHELL}|eval|exec)\s*\("
+        rf"(?P<n>{_PY_ALWAYS_SHELL}|{_PY_WITH_SHELL}|eval|exec)\s*\("
     ),
     True: re.compile(
-        rf"(?P<n>{_JS_SEMPRE_SHELL}|{_JS_CON_SHELL}|eval)\s*\("
+        rf"(?P<n>{_JS_ALWAYS_SHELL}|{_JS_WITH_SHELL}|eval)\s*\("
     ),
 }
-_SEMPRE_SHELL = {
-    False: frozenset(_PY_SEMPRE_SHELL.split("|")),
-    True: frozenset(_JS_SEMPRE_SHELL.split("|")),
+_ALWAYS_SHELL = {
+    False: frozenset(_PY_ALWAYS_SHELL.split("|")),
+    True: frozenset(_JS_ALWAYS_SHELL.split("|")),
 }
-_SHELL_ACCESA = re.compile(r"\bshell\s*[=:]\s*(?!False\b|false\b|0\b|None\b|null\b|undefined\b)")
-_PREFISSO_STRINGA = re.compile(r"[rRbBfFuU]{1,2}(?=['\"])")
-_DINAMICO = "$DINAMICO"
+_SHELL_ON = re.compile(r"\bshell\s*[=:]\s*(?!False\b|false\b|0\b|None\b|null\b|undefined\b)")
+_STRING_PREFIX = re.compile(r"[rRbBfFuU]{1,2}(?=['\"])")
+_DYNAMIC = "$DYNAMIC"
 
 
-class _Illeggibile(Exception):
+class _Unreadable(Exception):
     pass
 
 
-def _fine_stringa(src: str, i: int, js: bool) -> int:
-    """Indice subito dopo la stringa che comincia in `i` (dov'è la virgoletta)."""
+def _string_end(src: str, i: int, js: bool) -> int:
+    """Index right after the string that starts at `i` (where the quote is)."""
     q = src[i]
-    triplo = not js and src.startswith(q * 3, i)
-    j = i + (3 if triplo else 1)
+    triple = not js and src.startswith(q * 3, i)
+    j = i + (3 if triple else 1)
     n = len(src)
     while j < n:
         c = src[j]
         if c == "\\":
             j += 2
-        elif triplo and src.startswith(q * 3, j):
+        elif triple and src.startswith(q * 3, j):
             return j + 3
-        elif not triplo and c == q:
+        elif not triple and c == q:
             return j + 1
-        elif not triplo and c == "\n" and not (js and q == "`"):
-            raise _Illeggibile
+        elif not triple and c == "\n" and not (js and q == "`"):
+            raise _Unreadable
         else:
             j += 1
-    raise _Illeggibile
+    raise _Unreadable
 
 
-def _fine_chiamata(src: str, i: int, js: bool) -> int:
-    """Indice della parentesi che chiude la chiamata aperta subito prima di `i`."""
-    profondita, n = 1, len(src)
+def _call_end(src: str, i: int, js: bool) -> int:
+    """Index of the parenthesis that closes the call opened right before `i`."""
+    depth, n = 1, len(src)
     while i < n:
         c = src[i]
         if c in "'\"" or (js and c == "`"):
-            i = _fine_stringa(src, i, js)
+            i = _string_end(src, i, js)
             continue
         if c in "([{":
-            profondita += 1
+            depth += 1
         elif c in ")]}":
-            profondita -= 1
-            if profondita == 0:
+            depth -= 1
+            if depth == 0:
                 return i
         i += 1
-    raise _Illeggibile
+    raise _Unreadable
 
 
-def _decodifica(src: str, js: bool, prefisso: str, grezzo: str) -> str:
+def _decode(src: str, js: bool, prefix: str, raw_text: str) -> str:
     if js:
-        return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "r": "\r"}.get(m.group(1), m.group(1)), grezzo)
-    if "f" in prefisso.lower():
-        return re.sub(r"\{[^{}]*\}", _DINAMICO, grezzo.replace("{{", "{").replace("}}", "}"))
+        return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "r": "\r"}.get(m.group(1), m.group(1)), raw_text)
+    if "f" in prefix.lower():
+        return re.sub(r"\{[^{}]*\}", _DYNAMIC, raw_text.replace("{{", "{").replace("}}", "}"))
     try:
         import ast
 
-        valore = ast.literal_eval(prefisso + src)
-        return valore if isinstance(valore, str) else grezzo
+        value = ast.literal_eval(prefix + src)
+        return value if isinstance(value, str) else raw_text
     except (ValueError, SyntaxError):
-        return grezzo
+        return raw_text
 
 
-def _primo_argomento(args: str, js: bool) -> str | None:
-    """Il primo argomento di una chiamata come testo di shell, se contiene letterali:
-    `'rm -rf ' + d` diventa `rm -rf $DINAMICO`, perché ciò che non si legge è una
-    variabile, e una variabile in un comando distruttivo è vietata. None se non c'è
-    nessun letterale (`os.system(cmd)`): lì non si sa niente."""
-    parti: list[str] = []
-    letterale = False
+def _first_argument(args: str, js: bool) -> str | None:
+    """The first argument of a call as shell text, if it contains literals:
+    `'rm -rf ' + d` becomes `rm -rf $DYNAMIC`, because what cannot be read is a
+    variable, and a variable in a destructive command is forbidden. None if there is
+    no literal at all (`os.system(cmd)`): there nothing is known."""
+    parts: list[str] = []
+    literal = False
     i, n = 0, len(args)
     try:
         while i < n:
@@ -1407,61 +1406,61 @@ def _primo_argomento(args: str, js: bool) -> str | None:
                 continue
             if c == ",":
                 break
-            m = None if js else _PREFISSO_STRINGA.match(args, i)
-            inizio = i + (m.end() - m.start() if m else 0)
-            if args[inizio:inizio + 1] in ("'", '"') or (js and c == "`"):
-                fine = _fine_stringa(args, inizio, js)
-                triplo = not js and args.startswith(args[inizio] * 3, inizio)
-                lung = 3 if triplo else 1
-                grezzo = args[inizio + lung:fine - lung]
-                testo = _decodifica(args[inizio:fine], js, m.group(0) if m else "", grezzo)
-                # `"rm -rf %s" % d`, `"rm -rf {}".format(d)`: il segnaposto è una variabile.
-                resto = args[fine:].lstrip()
-                if not js and (resto.startswith("%") or resto.startswith(".format")):
-                    testo = re.sub(r"%[sdr]|\{[^{}]*\}", _DINAMICO, testo)
-                parti.append(testo)
-                letterale = True
-                i = fine
+            m = None if js else _STRING_PREFIX.match(args, i)
+            start = i + (m.end() - m.start() if m else 0)
+            if args[start:start + 1] in ("'", '"') or (js and c == "`"):
+                end = _string_end(args, start, js)
+                triple = not js and args.startswith(args[start] * 3, start)
+                length = 3 if triple else 1
+                raw_text = args[start + length:end - length]
+                text = _decode(args[start:end], js, m.group(0) if m else "", raw_text)
+                # `"rm -rf %s" % d`, `"rm -rf {}".format(d)`: the placeholder is a variable.
+                rest = args[end:].lstrip()
+                if not js and (rest.startswith("%") or rest.startswith(".format")):
+                    text = re.sub(r"%[sdr]|\{[^{}]*\}", _DYNAMIC, text)
+                parts.append(text)
+                literal = True
+                i = end
                 continue
-            # Un'espressione che non è un letterale: si salta fino al `+` o alla `,` successivi.
-            profondita = 0
+            # An expression that is not a literal: skip up to the next `+` or `,`.
+            depth = 0
             while i < n:
                 k = args[i]
                 if k in "'\"" or (js and k == "`"):
-                    i = _fine_stringa(args, i, js)
+                    i = _string_end(args, i, js)
                     continue
                 if k in "([{":
-                    profondita += 1
+                    depth += 1
                 elif k in ")]}":
-                    profondita -= 1
-                elif profondita <= 0 and k in ",+":
+                    depth -= 1
+                elif depth <= 0 and k in ",+":
                     break
                 i += 1
-            parti.append(_DINAMICO)
-    except _Illeggibile:
-        return "".join(parti) if letterale else None
-    return "".join(parti) if letterale else None
+            parts.append(_DYNAMIC)
+    except _Unreadable:
+        return "".join(parts) if literal else None
+    return "".join(parts) if literal else None
 
 
-def comandi_lanciati(src: str, js: bool, profondita: int = 0, crudo: bool = False) -> list[str]:
-    """Le stringhe che il codice `src` (Python se `js` è falso, JavaScript se vero)
-    passa a una chiamata che le esegue come comando di shell: `os.system`,
-    `os.popen`, `subprocess.*(…, shell=True)`, `child_process.exec`/`execSync`, e
-    anche `eval`/`exec` di un letterale, che sono codice a loro volta. Una lista
-    di argomenti senza shell (`subprocess.run(['git', 'status'])`) non lancia
-    una shell e non conta. Commenti e stringhe che nessuno passa non contano.
+def launched_commands(src: str, js: bool, depth: int = 0, raw_mode: bool = False) -> list[str]:
+    """The strings that the code `src` (Python if `js` is false, JavaScript if true)
+    passes to a call that runs them as a shell command: `os.system`,
+    `os.popen`, `subprocess.*(…, shell=True)`, `child_process.exec`/`execSync`, and
+    also `eval`/`exec` of a literal, which are code in turn. A list of
+    arguments without a shell (`subprocess.run(['git', 'status'])`) does not launch
+    a shell and does not count. Comments and strings that nobody passes do not count.
 
-    Se la lettura si incrocia (una stringa che non si chiude), si rilegge il testo
-    *senza* saltare commenti e stringhe: più falsi allarmi, mai un varco."""
-    trovate: list[str] = []
-    if profondita > MAX_DEPTH:
-        return trovate
-    chiamata = _CHIAMATE[js]
+    If the read gets tangled (a string that does not close), the text is reread
+    *without* skipping comments and strings: more false alarms, never a gap."""
+    found: list[str] = []
+    if depth > MAX_DEPTH:
+        return found
+    call = _CALLS[js]
     i, n = 0, len(src)
     try:
         while i < n:
             c = src[i]
-            if not crudo:
+            if not raw_mode:
                 if (c == "#" and not js) or (js and src.startswith("//", i)):
                     j = src.find("\n", i)
                     i = n if j < 0 else j
@@ -1471,80 +1470,80 @@ def comandi_lanciati(src: str, js: bool, profondita: int = 0, crudo: bool = Fals
                     i = n if j < 0 else j + 2
                     continue
                 if c in "'\"" or (js and c == "`"):
-                    fine = _fine_stringa(src, i, js)
+                    end = _string_end(src, i, js)
                     if js and c == "`":
-                        for e in re.finditer(r"\$\{([^{}]*)\}", src[i:fine]):
-                            trovate += comandi_lanciati(e.group(1), js, profondita + 1, crudo)
-                    i = fine
+                        for e in re.finditer(r"\$\{([^{}]*)\}", src[i:end]):
+                            found += launched_commands(e.group(1), js, depth + 1, raw_mode)
+                    i = end
                     continue
-            m = chiamata.match(src, i) if (c.isalpha() or c in "_$") and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] in "_$")) else None
+            m = call.match(src, i) if (c.isalpha() or c in "_$") and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] in "_$")) else None
             if not m:
                 i += 1
                 continue
-            fine = _fine_chiamata(src, m.end(), js)
-            args = src[m.end():fine]
-            nome = m.group("n")
-            if nome == "eval" or (nome == "exec" and not js):
-                letterale = _primo_argomento(args, js)
-                if letterale is not None:
-                    trovate += comandi_lanciati(letterale, js, profondita + 1, crudo)
-            elif nome in _SEMPRE_SHELL[js] or _SHELL_ACCESA.search(args):
-                comando = _primo_argomento(args, js)
-                if comando is not None and comando.strip():
-                    trovate.append(comando)
+            end = _call_end(src, m.end(), js)
+            args = src[m.end():end]
+            name = m.group("n")
+            if name == "eval" or (name == "exec" and not js):
+                literal = _first_argument(args, js)
+                if literal is not None:
+                    found += launched_commands(literal, js, depth + 1, raw_mode)
+            elif name in _ALWAYS_SHELL[js] or _SHELL_ON.search(args):
+                command = _first_argument(args, js)
+                if command is not None and command.strip():
+                    found.append(command)
             i = m.end()
-    except _Illeggibile:
-        return comandi_lanciati(src, js, profondita, True) if not crudo else trovate
-    return trovate
+    except _Unreadable:
+        return launched_commands(src, js, depth, True) if not raw_mode else found
+    return found
 
 
-def check_codice_negli_heredoc(text: str, config: dict, cwd: str, depth: int) -> None:
-    """Un heredoc Python o Node che passa una stringa letterale a `os.system`,
-    `subprocess.*(…, shell=True)`, `child_process.exec`: quella stringa è un comando
-    di shell, e si giudica con gli stessi controlli di un comando Bash. Vale anche
-    se il programma arriva dallo stdin di `python3 -c 'exec(input())'`. Con il tetto
-    di profondità di `check_inline_shell`."""
+def check_code_in_heredocs(text: str, config: dict, cwd: str, depth: int) -> None:
+    """A Python or Node heredoc that passes a literal string to `os.system`,
+    `subprocess.*(…, shell=True)`, `child_process.exec`: that string is a shell
+    command, and is judged with the same checks as a Bash command. Also applies
+    if the program comes from the stdin of `python3 -c 'exec(input())'`. With the
+    depth ceiling of `check_inline_shell`."""
     if depth >= MAX_DEPTH or "<<" not in text:
         return
 
-    def guarda(m: re.Match, ricevente: tuple[str, list[str], bool]) -> bool:
-        nome, args, _ = ricevente
-        js = nome == "node"
-        if not (js or re.fullmatch(r"python[\d.]*", nome)):
+    def look(m: re.Match, receiver: tuple[str, list[str], bool]) -> bool:
+        name, args, _ = receiver
+        js = name == "node"
+        if not (js or re.fullmatch(r"python[\d.]*", name)):
             return False
-        codice = _codice_inline(m, args)
-        # Con `-c`/`-e` il corpo è il programma solo se il codice lo legge dallo stdin.
-        if codice is not None and not STDIN_LETTO.search(codice):
+        code = _inline_code(m, args)
+        # With `-c`/`-e` the body is the program only if the code reads it from stdin.
+        if code is not None and not READS_STDIN.search(code):
             return False
-        for comando in comandi_lanciati(m.group("body"), js):
+        for command in launched_commands(m.group("body"), js):
             try:
-                check_bash(comando, config, cwd, depth + 1)
-            except Decision as trovato:
+                check_bash(command, config, cwd, depth + 1)
+            except Decision as found:
                 raise Decision(
-                    trovato.verdict,
-                    f"dentro un comando che il codice passa alla shell ({comando[:70]!r}): {trovato.reason}",
+                    found.verdict,
+                    f"inside a command that the code passes to the shell ({command[:70]!r}): {found.reason}",
                 ) from None
         return False
 
-    riscrivi_heredoc(text, guarda)
+    rewrite_heredoc(text, look)
 
 
-def solo_sintassi(match: re.Match) -> bool:
-    """`bash -n script.sh`: la shell legge lo script e ne controlla la sintassi,
-    senza eseguirne niente. Scansionarlo come se partisse fermava proprio il
-    controllo che si fa prima di lanciarlo (falso positivo del 2026-10-03/04).
-    Con -i la shell è interattiva e -n non vale più."""
+def syntax_only(match: re.Match) -> bool:
+    """`bash -n script.sh`: the shell reads the script and checks its syntax,
+    without running any of it. Scanning it as if it started stopped precisely the
+    check one does before launching it (false positive of 2026-10-03/04).
+    With -i the shell is interactive and -n no longer applies."""
     if not re.fullmatch(r"(?:ba|z|da|k)?sh", match.group("interp")):
         return False
-    lettere = "".join(f[1:] for f in match.group("flags").split() if re.fullmatch(r"-[a-zA-Z]+", f))
-    return "n" in lettere and "i" not in lettere
+    letters = "".join(f[1:] for f in match.group("flags").split() if re.fullmatch(r"-[a-zA-Z]+", f))
+    return "n" in letters and "i" not in letters
 
 
 def invoked_scripts(text: str, cwd: str) -> list[Path]:
     found: list[Path] = []
     for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
         for match in regex.finditer(text):
-            if regex is SCRIPT_BY_INTERPRETER and solo_sintassi(match):
+            if regex is SCRIPT_BY_INTERPRETER and syntax_only(match):
                 continue
             raw = match.group("path").strip("\"'")
             if "$" in raw:
@@ -1560,97 +1559,97 @@ def invoked_scripts(text: str, cwd: str) -> list[Path]:
     return found
 
 
-def script_approvato(path: Path, content: str, config: dict) -> str:
-    """Lo script è in `allow_scripts` di `.guardrail.json`?
+def script_approved(path: Path, content: str, config: dict) -> str:
+    """Is the script in `allow_scripts` of `.guardrail.json`?
 
-    Quattro risposte: "si" (path e impronta corrispondono), "cambiato" (il path è
-    stato approvato, ma il contenuto non è più quello), "senza-impronta" (la voce
-    non dichiara un sha256, quindi non approva niente), "no".
+    Four answers: "yes" (path and fingerprint match), "changed" (the path was
+    approved, but the content is no longer that one), "no-fingerprint" (the entry
+    does not declare a sha256, so it approves nothing), "no".
 
-    L'approvazione è legata al **contenuto**, non al nome: uno script approvato
-    oggi e modificato domani torna a chiedere conferma. È la differenza fra
-    «questo script l'ho letto» e «di questo file mi fido per sempre», e il
-    2026-09-11 è nato da uno script di deploy che nessuno aveva riletto.
+    The approval is tied to the **content**, not to the name: a script approved
+    today and modified tomorrow asks for confirmation again. It is the difference
+    between "I have read this script" and "I trust this file forever", and
+    2026-09-11 was born from a deploy script nobody had reread.
     """
-    impronta = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    esito = "no"
-    for voce in config["allow_scripts"]:
-        if isinstance(voce, str):
-            voce = {"path": voce}
-        if not isinstance(voce, dict) or not voce.get("path"):
+    fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    outcome = "no"
+    for entry in config["allow_scripts"]:
+        if isinstance(entry, str):
+            entry = {"path": entry}
+        if not isinstance(entry, dict) or not entry.get("path"):
             continue
-        if matches_any([str(voce["path"])], str(path)) is None:
+        if matches_any([str(entry["path"])], str(path)) is None:
             continue
-        dichiarata = str(voce.get("sha256", "")).lower()
-        # Senza impronta non si esenta niente: dichiararla è il modo di dire
-        # "ho letto *questo* contenuto".
-        if not dichiarata:
-            esito = "senza-impronta"
+        declared = str(entry.get("sha256", "")).lower()
+        # Without a fingerprint nothing is exempted: declaring it is the way to say
+        # "I have read *this* content".
+        if not declared:
+            outcome = "no-fingerprint"
             continue
-        if dichiarata == impronta:
-            return "si"
-        esito = "cambiato"
-    return esito
+        if declared == fingerprint:
+            return "yes"
+        outcome = "changed"
+    return outcome
 
 
 def check_scripts(text: str, config: dict, cwd: str) -> None:
-    """Uno script lanciato è un comando che il hook altrimenti non vedrebbe."""
+    """A launched script is a command the hook would otherwise not see."""
     for path in invoked_scripts(text, cwd):
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        approvazione = script_approvato(path, content, config)
+        approval = script_approved(path, content, config)
         try:
             check_bash(content, config, cwd, depth=1)
         except Decision as found:
-            # `deny_commands` non si esenta: è la lista "questo non si lancia
-            # mai", e vale anche dentro uno script approvato. Lo stesso per la
-            # rimozione di .guardrail.json: uno script non spegne guardrail.
-            if found.reason.startswith("comando vietato dalla configurazione") or SPEGNE_GUARDRAIL in found.reason:
-                deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
-            if approvazione == "si":
+            # `deny_commands` is not exempted: it is the "this is never launched"
+            # list, and applies even inside an approved script. The same for the
+            # removal of .guardrail.json: a script does not turn guardrail off.
+            if found.reason.startswith("command forbidden by the project configuration") or TURNS_GUARDRAIL_OFF in found.reason:
+                deny(f"the script {path.name} contains a forbidden command: {found.reason}")
+            if approval == "yes":
                 continue
-            avviso = ""
-            if approvazione == "cambiato":
-                avviso = (
-                    f" ATTENZIONE: {path.name} è in allow_scripts, ma il suo contenuto non è più quello "
-                    "approvato — l'impronta in .guardrail.json non corrisponde."
+            warning = ""
+            if approval == "changed":
+                warning = (
+                    f" WARNING: {path.name} is in allow_scripts, but its content is no longer the approved "
+                    "one — the fingerprint in .guardrail.json does not match."
                 )
-            elif approvazione == "senza-impronta":
-                avviso = (
-                    f" Nota: la voce di allow_scripts per {path.name} non dichiara sha256, quindi non "
-                    "esenta niente. Aggiungi l'impronta dello script che hai letto."
+            elif approval == "no-fingerprint":
+                warning = (
+                    f" Note: the allow_scripts entry for {path.name} does not declare a sha256, so it "
+                    "exempts nothing. Add the fingerprint of the script you read."
                 )
             ask(
-                f"lo script {path.name} contiene un comando che guardrail bloccherebbe se lanciato "
-                f"direttamente — {found.reason} Leggilo, mostralo all'utente, e decida lui.{avviso}"
+                f"the script {path.name} contains a command that guardrail would block if launched "
+                f"directly — {found.reason} Read it, show it to the user, and let them decide.{warning}"
             )
 
 
 # ---------------------------------------------------------------------------
-# Bash: la funzione principale
+# Bash: the main function
 # ---------------------------------------------------------------------------
 
-# Interpreti di shell che accettano il codice come *stringa*. `python`, `node` e
-# simili restano fuori: il loro argomento non è shell, e indovinarne il senso
-# sarebbe peggio che dichiarare il limite.
+# Shell interpreters that accept code as a *string*. `python`, `node` and the
+# like stay out: their argument is not shell, and guessing its meaning would be
+# worse than declaring the limit.
 SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "ash"})
-# Opzioni di ssh che si portano dietro un valore: quel valore non è il comando.
+# ssh options that carry a value: that value is not the command.
 SSH_VALUE_FLAGS = frozenset({"-o", "-p", "-i", "-l", "-F", "-b", "-c", "-D", "-E", "-e", "-I",
                              "-J", "-L", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"})
 MAX_DEPTH = 4
 
 
 def inline_shell_payloads(text: str) -> list[str]:
-    """Il codice passato a una shell come stringa: `bash -c "…"`, `sh -c '…'`,
+    """The code passed to a shell as a string: `bash -c "…"`, `sh -c '…'`,
     `eval …`, `ssh host "…"`.
 
-    Il primo token di quella stringa **è** posizione di comando, ed è l'unico
-    posto in cui le regole ancorate alla posizione (rm, find -delete, sudo, i CLI
-    dei database) non guardavano. La ricorsione parte solo se l'interprete è
-    davvero invocato: in `grep -n "bash -c \\"rm -rf\\""` il comando è `grep`, e
-    non succede niente — la difesa dal falso positivo del 2026-09-17 resta.
+    The first token of that string **is** command position, and it is the only
+    place the position-anchored rules (rm, find -delete, sudo, the database CLIs)
+    did not look. The recursion starts only if the interpreter is really
+    invoked: in `grep -n "bash -c \\"rm -rf\\""` the command is `grep`, and
+    nothing happens — the defence from the false positive of 2026-09-17 stays.
     """
     lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
     lexer.whitespace_split = True
@@ -1662,10 +1661,10 @@ def inline_shell_payloads(text: str) -> list[str]:
         return payloads
 
     at_start = True
-    indice = 0
-    while indice < len(tokens):
-        token = tokens[indice]
-        indice += 1
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
         if token in SHELL_SEPARATORS:
             at_start = True
             continue
@@ -1674,191 +1673,191 @@ def inline_shell_payloads(text: str) -> list[str]:
         if ENV_ASSIGNMENT.fullmatch(token) or token in COMMAND_WRAPPERS:
             continue
         if os.path.basename(token) == "timeout":
-            indice = dopo_timeout(tokens, indice)
+            index = after_timeout(tokens, index)
             continue
         at_start = False
-        nome = os.path.basename(token)
+        name = os.path.basename(token)
 
-        # `bash -c "…"`, anche con flag composti (`-lc`, `-ec`).
-        if nome in SHELL_INTERPRETERS:
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                flag = tokens[indice]
-                indice += 1
+        # `bash -c "…"`, also with compound flags (`-lc`, `-ec`).
+        if name in SHELL_INTERPRETERS:
+            while index < len(tokens) and tokens[index] not in SHELL_SEPARATORS:
+                flag = tokens[index]
+                index += 1
                 if flag.startswith("-") and not flag.startswith("--") and "c" in flag:
-                    if indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                        payloads.append(tokens[indice])
-                        indice += 1
+                    if index < len(tokens) and tokens[index] not in SHELL_SEPARATORS:
+                        payloads.append(tokens[index])
+                        index += 1
                     break
                 if not flag.startswith("-"):
-                    break  # è il path di uno script: se ne occupa check_scripts
-        # `eval rm -rf "$X"`: tutto quello che segue è codice.
-        elif nome == "eval":
-            resto = []
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                resto.append(tokens[indice])
-                indice += 1
-            if resto:
-                payloads.append(" ".join(resto))
-        # `ssh [opzioni] host "…"`: il comando remoto è tutto ciò che segue l'host.
-        elif nome == "ssh":
-            host_visto = False
-            resto = []
-            while indice < len(tokens) and tokens[indice] not in SHELL_SEPARATORS:
-                pezzo = tokens[indice]
-                indice += 1
-                if not host_visto:
-                    if pezzo in SSH_VALUE_FLAGS:
-                        indice += 1
+                    break  # it is the path of a script: check_scripts handles it
+        # `eval rm -rf "$X"`: everything that follows is code.
+        elif name == "eval":
+            rest = []
+            while index < len(tokens) and tokens[index] not in SHELL_SEPARATORS:
+                rest.append(tokens[index])
+                index += 1
+            if rest:
+                payloads.append(" ".join(rest))
+        # `ssh [options] host "…"`: the remote command is everything that follows the host.
+        elif name == "ssh":
+            host_seen = False
+            rest = []
+            while index < len(tokens) and tokens[index] not in SHELL_SEPARATORS:
+                piece = tokens[index]
+                index += 1
+                if not host_seen:
+                    if piece in SSH_VALUE_FLAGS:
+                        index += 1
                         continue
-                    if pezzo.startswith("-"):
+                    if piece.startswith("-"):
                         continue
-                    host_visto = True
+                    host_seen = True
                     continue
-                resto.append(pezzo)
-            if resto:
-                payloads.append(" ".join(resto))
+                rest.append(piece)
+            if rest:
+                payloads.append(" ".join(rest))
     return payloads
 
 
 def check_inline_shell(text: str, config: dict, cwd: str, depth: int) -> None:
-    """Analizza il codice passato a una shell come stringa, con le stesse regole.
+    """Analyses the code passed to a shell as a string, with the same rules.
 
-    A differenza di uno script del repo, qui non si declassa il `deny` a `ask`:
-    lo script lo ha scritto un umano e l'umano decide, questa stringa l'ha
-    scritta chi ha scritto il comando, un istante fa.
+    Unlike a script in the repo, here `deny` is not downgraded to `ask`:
+    the script was written by a human and the human decides, this string was
+    written by whoever wrote the command, a moment ago.
     """
     if depth >= MAX_DEPTH:
         return
     for payload in inline_shell_payloads(text):
         try:
             check_bash(payload, config, cwd, depth + 1)
-        except Decision as trovato:
+        except Decision as found:
             raise Decision(
-                trovato.verdict,
-                f"dentro una stringa passata a una shell ({payload[:70]!r}): {trovato.reason}",
+                found.verdict,
+                f"inside a string passed to a shell ({payload[:70]!r}): {found.reason}",
             ) from None
 
 
 def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     text = strip_data_heredocs(re.sub(r"\\\n", " ", cmd))
-    check_codice_negli_heredoc(text, config, cwd, depth)
-    # Le regex di progetto guardano il testo senza i corpi degli heredoc diretti a
-    # un interprete: là dentro un path è citato, non eseguito. Le regole built-in
-    # li perdono solo se quel codice non può arrivare alla shell.
-    testo_progetto = strip_interpreter_heredocs(text)
-    text = backtick_in_sostituzioni(strip_inert_heredocs(text))
+    check_code_in_heredocs(text, config, cwd, depth)
+    # The project regexes look at the text without the bodies of the heredocs directed
+    # to an interpreter: in there a path is quoted, not run. The built-in rules
+    # lose them only if that code cannot reach the shell.
+    project_text = strip_interpreter_heredocs(text)
+    text = backticks_to_substitutions(strip_inert_heredocs(text))
 
-    if depth == 0 and matches_any(config["allow_commands"], testo_progetto):
+    if depth == 0 and matches_any(config["allow_commands"], project_text):
         return
 
-    if (pattern := matches_any(config["deny_commands"], testo_progetto)):
-        deny(f"comando vietato dalla configurazione del progetto (.guardrail.json, regola {pattern!r}).")
+    if (pattern := matches_any(config["deny_commands"], project_text)):
+        deny(f"command forbidden by the project configuration (.guardrail.json, rule {pattern!r}).")
 
     check_inline_shell(text, config, cwd, depth)
     check_rm(text)
     check_secret_reads(text)
     check_protected_writes(text, cwd)
 
-    # Distruzione di sistema o supply chain
+    # System destruction or supply chain
     if re.search(r"\bsudo\s+rm\b", text):
-        deny("sudo rm: cancellazioni con privilegi non passano dall'agente.")
+        deny("sudo rm: privileged deletions do not go through the agent.")
     if re.search(r"\b(mkfs(\.\w+)?|dd\s+[^|;]*of=/dev/|wsl(\.exe)?\s+--unregister)\b", text):
-        deny("comando che distrugge un filesystem o una distro.")
+        deny("command that destroys a filesystem or a distro.")
     if re.search(r"\bchmod\s+(-R\s+)?[0-7]*777\b", text):
-        deny("chmod 777: permessi aperti a tutti, mai.")
+        deny("chmod 777: permissions open to everyone, never.")
     if re.search(r"\b(chmod|chown|chgrp)\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+|--recursive\s+)[^;|]*\s(?:~|\$HOME|/home/[\w.-]+|/)/?(?:\s|$)", text):
-        deny("chmod/chown ricorsivo sulla home o sulla radice: rende inutilizzabile l'ambiente dell'utente.")
+        deny("recursive chmod/chown on the home or on the root: makes the user's environment unusable.")
     if re.search(r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
-        deny("curl|sh: esecuzione di codice scaricato al volo. Scarica il file, leggilo, poi esegui.")
+        deny("curl|sh: running code downloaded on the fly. Download the file, read it, then run it.")
     if re.search(r"\b(base64|openssl|echo|printf|xxd)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", text):
-        deny("codice decodificato o costruito al volo e passato a sh: illeggibile per chi controlla. Scrivilo in un file, poi esegui.")
+        deny("code decoded or built on the fly and passed to sh: unreadable for whoever checks. Write it to a file, then run it.")
 
-    # Le regole che seguono sono regex sul testo: valgono solo se il programma
-    # compare come parola, non dentro il pattern di un grep. `mirror` è un comando
-    # di lftp e vive dentro la stringa di `-e`: conta la parola lftp.
+    # The rules that follow are regexes on the text: they apply only if the program
+    # appears as a word, not inside the pattern of a grep. `mirror` is an lftp
+    # command and lives inside the `-e` string: the word lftp counts.
     words = shell_words(text)
 
-    # Deploy con cancellazione sul bersaglio
+    # Deploy with deletion on the target
     if "lftp" in words and re.search(r"\bmirror\b[^;|]*--delete\b", text) and not re.search(r"\bmirror\b[^;|]*--dry-run\b", text):
-        deny("lftp mirror --delete senza --dry-run: cancella sul server remoto tutto ciò che manca in locale. (guardrail: deploy-infrastruttura.md)")
-    if rsync_che_cancella(text):
-        deny("rsync --delete senza --dry-run / -n: cancella sul bersaglio. Prima il dry-run, poi l'utente decide.")
+        deny("lftp mirror --delete without --dry-run: deletes on the remote server everything missing locally. (guardrail: deploy-infrastructure.md)")
+    if rsync_that_deletes(text):
+        deny("rsync --delete without --dry-run / -n: deletes on the target. First the dry-run, then the user decides.")
 
     # Git
     if "git" in words:
         if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--force(?!-with-lease)\b|\s-f\b|\s\+\S+)", text):
-            deny("git push --force: riscrive la storia condivisa. Mai. Se serve, --force-with-lease su un branch personale, con conferma.")
+            deny("git push --force: rewrites shared history. Never. If needed, --force-with-lease on a personal branch, with confirmation.")
         if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*--force-with-lease", text):
-            ask("git push --force-with-lease: accettabile solo su un branch personale. Conferma?")
+            ask("git push --force-with-lease: acceptable only on a personal branch. Confirm?")
         if re.search(r"\bgit\b[^;|]*\bpush\b[^;|]*(\s--delete\b|\s-d\b|\s:\S)", text):
-            ask("git push --delete: cancella un branch o un tag sul remoto, per tutti. Conferma?")
+            ask("git push --delete: deletes a branch or a tag on the remote, for everyone. Confirm?")
         if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*[xX]", text):
-            deny("git clean -x/-X: cancella anche i file ignorati, cioè .env e le credenziali locali.")
+            deny("git clean -x/-X: also deletes ignored files, that is .env and the local credentials.")
         if re.search(r"\bgit\b[^;|]*\bclean\b[^;|]*\s-[a-zA-Z]*f", text):
-            ask("git clean -f: cancella file non tracciati, non recuperabili. Conferma?")
+            ask("git clean -f: deletes untracked files, not recoverable. Confirm?")
         if re.search(r"\bgit\b[^;|]*\breset\s+--hard\b", text):
-            ask("git reset --hard: scarta modifiche non committate. Conferma?")
+            ask("git reset --hard: discards uncommitted changes. Confirm?")
         if re.search(r"\bgit\b[^;|]*\b(checkout|restore)\s+(--\s+)?\.(\s|$)", text):
-            ask("git checkout/restore .: scarta tutte le modifiche locali. Conferma?")
+            ask("git checkout/restore .: discards all local changes. Confirm?")
         if re.search(r"\bgit\b[^;|]*\bbranch\b[^;|]*\s-D\b", text):
-            ask("git branch -D: cancella un branch anche se non è stato mergiato. Conferma?")
+            ask("git branch -D: deletes a branch even if it has not been merged. Confirm?")
         if re.search(r"\bgit\b[^;|]*\bstash\s+(drop|clear)\b", text):
-            ask("git stash drop/clear: lavoro accantonato che sparisce. Conferma?")
+            ask("git stash drop/clear: stashed work that disappears. Confirm?")
 
-    # Laravel: comandi che distruggono lo schema
+    # Laravel: commands that destroy the schema
     if re.search(r"\bartisan\s+(migrate:fresh|db:wipe|migrate:reset)\b", text):
-        deny("artisan migrate:fresh / db:wipe / migrate:reset: droppano le tabelle, comprese quelle che le migration non ricreano. Solo a mano, su un DB usa e getta. (guardrail: database.md)")
+        deny("artisan migrate:fresh / db:wipe / migrate:reset: drop the tables, including those the migrations do not recreate. Only by hand, on a throwaway DB. (guardrail: database.md)")
     if re.search(r"\bartisan\s+migrate:rollback\b", text):
-        ask("artisan migrate:rollback: annulla migration già applicate. Su quale DB? Conferma.")
+        ask("artisan migrate:rollback: undoes migrations already applied. On which DB? Confirm.")
     if re.search(r"\bartisan\s+db:seed\b[^;|]*RolePermissionSeeder", text):
-        ask("RolePermissionSeeder sovrascrive le assegnazioni manuali di ruoli e permessi. Conferma che NON è un DB con dati reali.")
+        ask("RolePermissionSeeder overwrites the manual assignments of roles and permissions. Confirm that it is NOT a DB with real data.")
 
-    # Docker: volumi = database; la home montata in un container = nessuna regola
+    # Docker: volumes = databases; the home mounted in a container = no rule
     if re.search(r"\bdocker\s+(system\s+prune|volume\s+(rm|prune)|compose\s+down\b[^;|]*(-v\b|--volumes))", text):
-        ask("Docker: questa operazione cancella volumi, cioè database locali. Conferma?")
+        ask("Docker: this operation deletes volumes, that is local databases. Confirm?")
     if re.search(r"\bdocker\b[^;|]*\s(?:-v|--volume)[\s=]+[\"']?(?:~|\$HOME|/home/[\w.-]+|/)/?:", text) or re.search(
         r"\bdocker\b[^;|]*--mount[^;|]*\bsource=[\"']?(?:~|\$HOME|/home/[\w.-]+|/)/?[,\"'\s]", text
     ):
-        ask("docker con la home o la radice montate nel container: da dentro, nessuna regola vale più. Monta una directory del progetto. Conferma?")
+        ask("docker with the home or the root mounted in the container: from inside, no rule applies any more. Mount a project directory. Confirm?")
 
-    # SQL da riga di comando
+    # SQL from the command line
     check_sql_cli(text, config)
 
-    # Script invocati: si leggono e si scansionano con le stesse regole
+    # Invoked scripts: they are read and scanned with the same rules
     if depth == 0:
         check_scripts(text, config, cwd)
 
-    # Privilegi: mai in silenzio
+    # Privileges: never silently
     if re.search(r"(?:^|[;&|(]\s*)sudo\b", text):
-        ask("sudo: un comando con privilegi. Cosa fa, e perché serve root? Conferma.")
+        ask("sudo: a privileged command. What does it do, and why does it need root? Confirm.")
 
-    if (pattern := matches_any(config["ask_commands"], testo_progetto)):
-        ask(f"comando che richiede conferma per la configurazione del progetto (regola {pattern!r}).")
+    if (pattern := matches_any(config["ask_commands"], project_text)):
+        ask(f"command that requires confirmation per the project configuration (rule {pattern!r}).")
 
 
 RSYNC = re.compile(r"(?:[\w./~-]*/)?rsync")
 DRY_RUN_SHORT = re.compile(r"-[a-zA-Z]*n[a-zA-Z]*")
 
 
-def rsync_che_cancella(text: str) -> bool:
-    """rsync *eseguito* con --delete e senza dry-run.
+def rsync_that_deletes(text: str) -> bool:
+    """rsync *executed* with --delete and without dry-run.
 
-    `--delete` conta solo come opzione di un rsync dello stesso segmento, token per
+    `--delete` counts only as an option of an rsync in the same segment, token by
     token: in `sed -i 's/rsync -a --delete-after /rsync -a /' x; grep rsync x`
-    rsync è una parola del comando e --delete compare nel testo, ma tutti e due
-    stanno dentro il pattern di sed, che il --delete lo stava togliendo. Falso
-    positivo del 2026-10-03. `timeout 60 rsync …` e `find … -exec rsync …` restano
-    presi: rsync è un token del segmento anche se non è il primo.
+    rsync is a word of the command and --delete appears in the text, but both
+    sit inside the sed pattern, which was removing that --delete. False
+    positive of 2026-10-03. `timeout 60 rsync …` and `find … -exec rsync …` are still
+    caught: rsync is a token of the segment even if it is not the first.
     """
     for segment in shell_segments(text):
         tokens = shell_tokens(segment)
-        for indice, token in enumerate(tokens):
+        for index, token in enumerate(tokens):
             if not RSYNC.fullmatch(token):
                 continue
-            opzioni = tokens[indice + 1:]
-            cancella = any(o.startswith("--delete") or o == "--del" for o in opzioni)
-            prova = any(o == "--dry-run" or DRY_RUN_SHORT.fullmatch(o) for o in opzioni)
-            if cancella and not prova:
+            options = tokens[index + 1:]
+            deletes = any(o.startswith("--delete") or o == "--del" for o in options)
+            dry_run = any(o == "--dry-run" or DRY_RUN_SHORT.fullmatch(o) for o in options)
+            if deletes and not dry_run:
                 return True
     return False
 
@@ -1866,31 +1865,31 @@ def rsync_che_cancella(text: str) -> bool:
 SQL_CLI_NAMES = frozenset(
     {"psql", "mysql", "mariadb", "sqlcmd", "pg_restore", "dropdb", "createdb", "mongosh", "redis-cli"}
 )
-# Token che stanno davanti al comando vero senza esserlo.
+# Tokens that stand before the real command without being it.
 COMMAND_WRAPPERS = frozenset({"sudo", "env", "command", "exec", "time", "nohup", "xargs", "then", "do", "else", "!"})
-# Separatori dopo i quali ricomincia un comando.
+# Separators after which a command starts again.
 SHELL_SEPARATORS = frozenset({";", "|", "||", "&", "&&", "(", ")", "{", "}", "&|"})
 ENV_ASSIGNMENT = re.compile(r"\w+=.*", re.S)
 
 
 def invoked_commands(text: str) -> frozenset[str]:
-    """I comandi che il testo *esegue*, non quelli che nomina.
+    """The commands the text *runs*, not those it names.
 
-    `grep -n "dropdb" hooks/guard.py` non cancella nessun database, e nemmeno una
-    riga di codice che quella parola la contiene dentro una stringa: il nome sta
-    in posizione di argomento, non di comando. Cercarlo come testo è il falso
-    positivo del 2026-09-17, e blocca proprio chi sta diagnosticando il guard.
+    `grep -n "dropdb" hooks/guard.py` deletes no database, and neither does a
+    line of code that contains that word inside a string: the name sits
+    in argument position, not in command position. Looking for it as text is the
+    false positive of 2026-09-17, and blocks precisely whoever is diagnosing the guard.
 
-    Un ritorno a capo vale come `;`, perché ogni riga ricomincia con un comando;
-    va sostituito prima, però, non riga per riga: una stringa che si estende su
-    più righe lascerebbe ogni riga con le virgolette scompagnate.
+    A newline counts as `;`, because every line starts again with a command;
+    it must be replaced first, though, not line by line: a string spanning
+    several lines would leave every line with unpaired quotes.
 
-    posix=True: `\\"` è un escape, come nella shell vera. Senza, una virgoletta
-    escapata dentro un argomento fa ripartire la lettura a metà stringa, e un
-    nome citato lì in mezzo sembra un comando.
+    posix=True: `\\"` is an escape, as in the real shell. Without it, an escaped
+    quote inside an argument restarts the read in the middle of a string, and a
+    name quoted in there looks like a command.
 
-    Se le virgolette non tornano si ripiega sul comportamento testuale di prima
-    — tutte le parole — che sbaglia per eccesso di prudenza.
+    If the quotes do not balance it falls back to the textual behaviour of before
+    — all the words — which errs on the side of caution.
     """
     lexer = shlex.shlex(text.replace("\n", " ; "), punctuation_chars=True, posix=True)
     lexer.whitespace_split = True
@@ -1901,7 +1900,7 @@ def invoked_commands(text: str) -> frozenset[str]:
     in_timeout = False
     try:
         for token in lexer:
-            if skip_next:  # il bersaglio di una redirezione non è un comando
+            if skip_next:  # the target of a redirection is not a command
                 skip_next = False
                 continue
             if token and set(token) <= {"<", ">"}:
@@ -1913,7 +1912,7 @@ def invoked_commands(text: str) -> frozenset[str]:
                 continue
             if not at_start:
                 continue
-            # `timeout -k 5 60 psql …`: opzioni e durata non sono il comando.
+            # `timeout -k 5 60 psql …`: options and duration are not the command.
             if in_timeout:
                 if token in TIMEOUT_VALUE_FLAGS:
                     skip_next = True
@@ -1921,7 +1920,7 @@ def invoked_commands(text: str) -> frozenset[str]:
                 if token.startswith("-"):
                     continue
                 in_timeout = False
-                if DURATA.fullmatch(token):
+                if DURATION.fullmatch(token):
                     continue
             if os.path.basename(token) == "timeout":
                 in_timeout = True
@@ -1938,17 +1937,17 @@ def invoked_commands(text: str) -> frozenset[str]:
 
 
 def shell_words(text: str) -> frozenset[str]:
-    """Le parole che il testo contiene *come parole*, in qualunque posizione.
+    """The words the text contains *as words*, in any position.
 
-    Più largo di `invoked_commands`: `timeout 60 rsync …` e `find … -exec rsync …`
-    eseguono rsync senza metterlo in testa al comando, e qui contano. Più stretto
-    del testo grezzo: in `grep -rlE "rsync.*--delete" scripts/` la parola rsync non
-    c'è, c'è il pattern `rsync.*--delete`, che non sincronizza niente. È il falso
-    positivo del 2026-09-23, durante /guardrail:setup.
+    Broader than `invoked_commands`: `timeout 60 rsync …` and `find … -exec rsync …`
+    run rsync without putting it at the head of the command, and here they count.
+    Narrower than the raw text: in `grep -rlE "rsync.*--delete" scripts/` the word
+    rsync is not there, there is the pattern `rsync.*--delete`, which syncs nothing.
+    It is the false positive of 2026-09-23, during /guardrail:setup.
 
-    Una sostituzione di comando (`$(…)`, backtick) esegue anche dentro le
-    virgolette doppie, e le virgolette spaiate non si leggono: in quei casi si
-    torna a tutte le parole del testo, che sbaglia per eccesso di prudenza.
+    A command substitution (`$(…)`, backtick) runs even inside double quotes,
+    and unpaired quotes cannot be read: in those cases it falls back to all the
+    words of the text, which errs on the side of caution.
     """
     if "$(" in text or "`" in text:
         return frozenset(re.findall(r"[\w.-]+", text))
@@ -1961,12 +1960,12 @@ def shell_words(text: str) -> frozenset[str]:
         return frozenset(re.findall(r"[\w.-]+", text))
 
 
-# Il bersaglio di una connessione, e solo quello. Serve a distinguere
-# `pg_dump -h prod | psql -h localhost` (un clone verso una sandbox: legittimo,
-# vedi database.md) da `psql -h prod -f dump.sql` (un dump che rientra in
-# produzione): cercando "prod" nell'intero comando i due sono identici.
+# The target of a connection, and only that. It serves to tell apart
+# `pg_dump -h prod | psql -h localhost` (a clone towards a sandbox: legitimate,
+# see database.md) from `psql -h prod -f dump.sql` (a dump going back into
+# production): looking for "prod" in the whole command the two are identical.
 CONN_FLAGS = frozenset({"-h", "--host", "-d", "--dbname", "--database", "-U", "--username", "--service"})
-# Flag che portano un valore qualunque: quel valore non è un bersaglio.
+# Flags that carry any value: that value is not a target.
 OTHER_VALUE_FLAGS = frozenset(
     {"-c", "--command", "-f", "--file", "-o", "--output", "-p", "--port", "-P", "-v", "--set",
      "--variable", "-e", "--execute", "-L", "--log-file", "-j", "-T", "-F", "-n"}
@@ -1978,16 +1977,16 @@ CONN_ENV = re.compile(
 )
 CONN_URI = re.compile(r"(?:postgres(?:ql)?|mysql|mariadb)://", re.I)
 LOOKS_LIKE_FILE = re.compile(r"[/\\]|\.\w+$")
-# Comandi che possono comparire nella stessa catena senza essere un bersaglio.
+# Commands that can appear in the same chain without being a target.
 DUMP_COMMANDS = frozenset({"pg_dump", "pg_dumpall", "mysqldump", "cat", "zcat", "gunzip", "gzip", "sudo", "env"})
 
 
 def connection_targets(segment: str) -> str:
-    """Le parti di un comando che dicono *a quale database* punta: host, nome del
-    database, URI di connessione, variabili d'ambiente.
+    """The parts of a command that say *which database* it points to: host, database
+    name, connection URI, environment variables.
 
-    I nomi di file restano fuori di proposito: un dump si chiama spesso
-    `dump_produzione.sql`, e il nome di un file non è un bersaglio.
+    File names are deliberately left out: a dump is often called
+    `dump_production.sql`, and a file name is not a target.
     """
     targets: list[str] = []
     pending_conn = False
@@ -2015,18 +2014,18 @@ def connection_targets(segment: str) -> str:
         elif token.startswith("-"):
             continue
         elif not LOOKS_LIKE_FILE.search(token) and os.path.basename(token) not in SQL_CLI_NAMES | DUMP_COMMANDS:
-            targets.append(token)  # il nome del database, posizionale
+            targets.append(token)  # the database name, positional
     return " ".join(targets)
 
 
 RESTORE_CLI = re.compile(r"\b(?:psql|mysql|mariadb)\b")
-# Un file o una pipe in ingresso: il SQL lo porta il file, non il comando.
+# A file or a pipe as input: the SQL is carried by the file, not by the command.
 FILE_INPUT = re.compile(r"(?:^|\s)(?:-f|--file)[=\s]|(?<!<)<(?![<(])")
 PG_RESTORE_TARGET = re.compile(r"(?:^|\s)(?:-d|--dbname)[=\s]")
 
 
 def pipeline_segments(text: str) -> list[tuple[str, bool]]:
-    """Ogni comando della riga, e se riceve stdin da una pipe."""
+    """Every command of the line, and whether it receives stdin from a pipe."""
     parts = re.split(r"(\|\||&&|[;\n|])", text)
     segments: list[tuple[str, bool]] = []
     from_pipe = False
@@ -2039,11 +2038,11 @@ def pipeline_segments(text: str) -> list[tuple[str, bool]]:
 
 
 def check_restore_into_prod(text: str, config: dict) -> None:
-    """Un dump che rientra in produzione non contiene verbi SQL: li porta il file.
+    """A dump going back into production contains no SQL verbs: the file carries them.
 
-    È la direzione inversa del clone produzione → sandbox locale, ed è l'unico
-    modo in cui quel clone può fare danno: `psql -h prod -f dump.sql` riscrive il
-    database senza che una sola parola di SQL compaia nel comando.
+    It is the reverse direction of the production → local sandbox clone, and it is the
+    only way that clone can do harm: `psql -h prod -f dump.sql` rewrites the
+    database without a single word of SQL appearing in the command.
     """
     for segment, from_pipe in pipeline_segments(text):
         if RESTORE_CLI.search(segment):
@@ -2056,9 +2055,9 @@ def check_restore_into_prod(text: str, config: dict) -> None:
             continue
         if (pattern := matches_any(config["prod_patterns"], connection_targets(segment))):
             deny(
-                "un dump che rientra in PRODUZIONE: il file (o la pipe) in ingresso esegue SQL che nel "
-                f"comando non si vede, e il bersaglio è di produzione (regola {pattern!r}). Il clone va in "
-                "una direzione sola, produzione → locale. (guardrail: database.md)"
+                "a dump going back into PRODUCTION: the input file (or pipe) runs SQL that is not "
+                f"visible in the command, and the target is production (rule {pattern!r}). The clone goes in "
+                "one direction only, production → local. (guardrail: database.md)"
             )
 
 
@@ -2071,38 +2070,38 @@ def check_sql_cli(text: str, config: dict) -> None:
     check_restore_into_prod(text, config)
 
     if "dropdb" in invoked:
-        deny("dropdb: cancella un database intero.") if is_prod else ask("dropdb su un DB non di produzione: conferma?")
+        deny("dropdb: deletes a whole database.") if is_prod else ask("dropdb on a non-production DB: confirm?")
     if "pg_restore" in invoked and re.search(r"\bpg_restore\b[^;|]*(--clean|-c\b)", text) and is_prod:
-        deny("pg_restore --clean verso produzione: droppa gli oggetti prima di ricrearli.")
+        deny("pg_restore --clean towards production: drops the objects before recreating them.")
     if "redis-cli" in invoked and re.search(r"\bredis-cli\b[^;|]*\b(FLUSHALL|FLUSHDB)\b", text, re.I):
-        deny("FLUSHALL/FLUSHDB: svuota Redis, quindi cache, code e sessioni.")
+        deny("FLUSHALL/FLUSHDB: empties Redis, hence cache, queues and sessions.")
 
     if WRITE_SQL.search(text):
         if is_prod:
-            deny("SQL di scrittura verso un database di PRODUZIONE. In produzione si legge soltanto; ogni modifica passa da una migration nel repo o da un operatore umano. (guardrail: database.md)")
+            deny("write SQL towards a PRODUCTION database. Production is read only; every change goes through a migration in the repo or a human operator. (guardrail: database.md)")
         check_unbounded_writes(text)
 
 
 def check_unbounded_writes(sql: str) -> None:
     if re.search(r"\bDROP\s+(DATABASE|SCHEMA)\b", sql, re.I):
-        deny("DROP DATABASE/SCHEMA: mai dall'agente, su nessun ambiente.")
+        deny("DROP DATABASE/SCHEMA: never from the agent, on any environment.")
     if re.search(r"\bTRUNCATE\b", sql, re.I):
-        deny("TRUNCATE: svuota una tabella senza possibilità di rollback logico. Se serve, lo fa un umano.")
+        deny("TRUNCATE: empties a table with no possibility of logical rollback. If needed, a human does it.")
     for statement in re.split(r";", sql):
         if re.search(r"\bDELETE\s+FROM\s+[\w\".]+", statement, re.I) and not re.search(r"\bWHERE\b", statement, re.I):
-            deny("DELETE senza WHERE: cancella l'intera tabella. Aggiungi un predicato stretto.")
+            deny("DELETE without WHERE: deletes the whole table. Add a tight predicate.")
         if re.search(r"\bUPDATE\s+[\w\".]+\s+SET\b", statement, re.I) and not re.search(r"\bWHERE\b", statement, re.I):
-            deny("UPDATE senza WHERE: riscrive l'intera tabella. Aggiungi un predicato stretto.")
+            deny("UPDATE without WHERE: rewrites the whole table. Add a tight predicate.")
 
 
 # ---------------------------------------------------------------------------
-# MCP: server SQL, e tutti gli altri
+# MCP: SQL servers, and all the others
 # ---------------------------------------------------------------------------
 
 MCP_TOOL = re.compile(r"^mcp__(?P<server>[^_].*?)__(?P<tool>[^_].*)$")
 MCP_READ_TOOL = re.compile(r"^(get|list|read|show|describe|search|find|fetch|lookup|check|view|status|info|explain|count|export|browse|preview|query|resolve)(?=$|[_\-\s])", re.I)
-# Chiavi di tool_input che descrivono l'operazione (Azure MCP: "command",
-# GitHub MCP: "method"/"state"). Il resto dell'input sono parametri, non intenzioni.
+# tool_input keys that describe the operation (Azure MCP: "command",
+# GitHub MCP: "method"/"state"). The rest of the input is parameters, not intentions.
 MCP_OP_KEYS = ("command", "operation", "action", "method", "op", "intent", "state", "mode", "verb")
 MCP_DESTRUCTIVE = re.compile(
     r"\b(delete|remove|purge|destroy|drop|wipe|truncate|prune|reset|unregister|deallocate|revoke|force|closed?|dismiss|archive)\b",
@@ -2115,13 +2114,13 @@ MCP_MUTATING = re.compile(
 )
 
 
-# Tool di documentazione (context7: query-docs, resolve-library-id): il loro
-# `query` è una domanda in linguaggio naturale, e "with line and column" non è
-# una CTE. Classificarla come SQL dava "non classificabile" (2026-10-01/04).
-# Restano soggetti alle regole generiche dei tool MCP qui sotto.
+# Documentation tools (context7: query-docs, resolve-library-id): their
+# `query` is a natural-language question, and "with line and column" is not
+# a CTE. Classifying it as SQL gave "not classifiable" (2026-10-01/04).
+# They remain subject to the generic MCP tool rules below.
 MCP_DOCS_TOOL = re.compile(r"(?:^|[_-])(?:docs?|documentation|librar(?:y|ies))(?:$|[_-])", re.I)
-# Chiudere il browser di prova o una sua scheda non cancella niente: Playwright
-# (browser_close, browser_tabs con action=close), Chrome DevTools (close_page).
+# Closing the test browser or one of its tabs deletes nothing: Playwright
+# (browser_close, browser_tabs with action=close), Chrome DevTools (close_page).
 MCP_BROWSER_CLOSE = re.compile(r"\b(?:browser|page|tabs?)\s+close\b|\bclose\s+(?:browser|page|tabs?)\b", re.I)
 
 
@@ -2142,23 +2141,23 @@ def mcp_operation_text(tool: str, tool_input: dict) -> str:
     return " ".join(parts)
 
 
-# Campi in cui un server di `prose_mcp_servers` riceve il testo da scrivere.
+# Fields in which a server of `prose_mcp_servers` receives the text to write.
 MCP_CONTENT_KEYS = frozenset(
     ("content", "body", "text", "markdown", "message", "description", "comment", "title", "intent", "summary", "notes")
 )
 
 
 def mcp_target_text(tool_input: dict, prose: bool = False) -> str:
-    """I parametri MCP come testo, per riconoscere un bersaglio di produzione.
+    """The MCP parameters as text, to recognize a production target.
 
-    Di default conta tutto: un `body` può portare il bersaglio in qualunque forma
-    (JSON, JSON5, form-encoded, testo), e provare a leggerla apre la porta alle
-    differenze fra il nostro parser e quello del server. Solo per un server che
-    scrive testo, dichiarato in `prose_mcp_servers`, le stringhe dei campi di
-    contenuto non contano: il 2026-10-05 un documento che parlava di produzione
-    veniva bloccato come modifica alla produzione. Gli identificativi restano.
-    Niente ricorsione: un input annidato a fondo farebbe fallire il controllo, e un
-    errore interno lascia passare il tool.
+    By default everything counts: a `body` can carry the target in any form
+    (JSON, JSON5, form-encoded, text), and trying to parse it opens the door to
+    the differences between our parser and the server's. Only for a server that
+    writes text, declared in `prose_mcp_servers`, the strings of the content
+    fields do not count: on 2026-10-05 a document that talked about production
+    was blocked as a change to production. Identifiers still count.
+    No recursion: a deeply nested input would make the check fail, and an
+    internal error lets the tool through.
     """
     parts: list[str] = []
     stack: list[tuple[str, object]] = [("", tool_input)]
@@ -2186,55 +2185,55 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
     is_shared = server in config["ask_mcp_servers"]
 
     sql = extract_sql(tool_input)
-    # La classificazione distingue le tre risposte possibili, e la sola che
-    # autorizza è "lettura": una query di sola lettura resta permessa ovunque,
-    # produzione compresa, anche quando un valore confrontato contiene un verbo
-    # di scrittura. Tutto il resto si mostra a chi deve decidere.
+    # The classification tells the three possible answers apart, and the only one
+    # that authorizes is "read": a read-only query stays allowed everywhere,
+    # production included, even when a compared value contains a write verb.
+    # Everything else is shown to whoever has to decide.
     if (
         sql
         and re.search(r"(query|sql|execute|run|statement)", tool, re.I)
         and not MCP_DOCS_TOOL.search(tool)
         and SQL_KEYWORD.search(sql)
     ):
-        verdetto = classifica_sql(sql)
-        if verdetto == "lettura":
+        verdict = classify_sql(sql)
+        if verdict == "read":
             return
-        testo = query_esposta(sql)
-        if verdetto == "incerta":
-            perche = (
-                "non riesco a dire se legge o scrive: contiene un commento, un dollar-quote, un literal "
-                "non chiuso o un'istruzione che non si classifica (CALL, DO, COPY…), e lì il confine fra "
-                "codice e dati non è leggibile con certezza"
+        text = exposed_query(sql)
+        if verdict == "uncertain":
+            why = (
+                "I cannot tell whether it reads or writes: it contains a comment, a dollar-quote, an "
+                "unclosed literal or a statement that cannot be classified (CALL, DO, COPY…), and there the "
+                "boundary between code and data cannot be read with certainty"
             )
             if is_prod:
                 deny(
-                    f"query non classificabile sul server MCP {server!r}, che è PRODUZIONE — {perche}.\n"
-                    f"Sarebbe stato eseguito questo:\n    {testo}\n"
-                    "Riscrivila senza commenti né dollar-quote e con i literal chiusi, così posso "
-                    "riconoscerla come lettura; se deve davvero scrivere, la esegue un operatore. "
+                    f"unclassifiable query on the MCP server {server!r}, which is PRODUCTION — {why}.\n"
+                    f"This would have been run:\n    {text}\n"
+                    "Rewrite it without comments or dollar-quotes and with the literals closed, so I can "
+                    "recognize it as a read; if it really has to write, an operator runs it. "
                     "(guardrail: database.md)"
                 )
             ask(
-                f"query non classificabile sul server MCP {server!r} — {perche}.\n"
-                f"Sta per essere eseguito questo:\n    {testo}\nConfermi?"
+                f"unclassifiable query on the MCP server {server!r} — {why}.\n"
+                f"This is about to be run:\n    {text}\nConfirm?"
             )
         if is_prod:
             deny(
-                f"scrittura SQL sul server MCP {server!r}, che è PRODUZIONE. In produzione l'agente legge "
-                f"soltanto; le modifiche passano da una migration nel repo o da un operatore.\n"
-                f"Sarebbe stato eseguito questo:\n    {testo}\n(guardrail: database.md)"
+                f"SQL write on the MCP server {server!r}, which is PRODUCTION. In production the agent "
+                f"only reads; changes go through a migration in the repo or an operator.\n"
+                f"This would have been run:\n    {text}\n(guardrail: database.md)"
             )
-        check_unbounded_writes(sql_normalizzato(sql)[0])
+        check_unbounded_writes(normalized_sql(sql)[0])
         if is_shared:
             ask(
-                f"scrittura SQL sul server MCP {server!r}, condiviso con altre persone.\n"
-                f"Sta per essere eseguito questo:\n    {testo}\nConfermi?"
+                f"SQL write on the MCP server {server!r}, shared with other people.\n"
+                f"This is about to be run:\n    {text}\nConfirm?"
             )
         return
 
-    # Ogni altro server: Azure, GitHub, filesystem, ... L'intenzione sta nel nome
-    # del tool e nei campi che descrivono l'operazione; i parametri dicono se il
-    # bersaglio è produzione.
+    # Every other server: Azure, GitHub, filesystem, ... The intention sits in the
+    # tool name and in the fields describing the operation; the parameters say
+    # whether the target is production.
     if MCP_READ_TOOL.match(tool):
         return
     operation = MCP_BROWSER_CLOSE.sub(" ", mcp_operation_text(tool, tool_input))
@@ -2243,13 +2242,13 @@ def check_mcp(tool_name: str, tool_input: dict, config: dict) -> None:
 
     if MCP_DESTRUCTIVE.search(operation):
         if targets_prod:
-            deny(f"operazione distruttiva via MCP {server!r} ({operation.strip()}) su un bersaglio di PRODUZIONE. Mai dall'agente.")
-        ask(f"operazione distruttiva via MCP {server!r}: {operation.strip()}. Cosa sparisce, e si può ricreare? Conferma.")
+            deny(f"destructive operation via MCP {server!r} ({operation.strip()}) on a PRODUCTION target. Never from the agent.")
+        ask(f"destructive operation via MCP {server!r}: {operation.strip()}. What disappears, and can it be recreated? Confirm.")
     if MCP_MUTATING.search(operation):
         if targets_prod:
-            deny(f"modifica via MCP {server!r} ({operation.strip()}) su un bersaglio di PRODUZIONE. In produzione si legge soltanto; le modifiche passano da un deploy o da un operatore umano.")
+            deny(f"change via MCP {server!r} ({operation.strip()}) on a PRODUCTION target. Production is read only; changes go through a deploy or a human operator.")
         if is_shared:
-            ask(f"modifica via MCP {server!r} ({operation.strip()}) su un servizio condiviso. Conferma?")
+            ask(f"change via MCP {server!r} ({operation.strip()}) on a shared service. Confirm?")
 
 
 # ---------------------------------------------------------------------------
@@ -2264,8 +2263,8 @@ SECRET_TEMPLATE = re.compile(r"\.(example|sample|template|dist)$")
 SECRET_DIRS = {".ssh", ".aws", ".azure", ".kube", ".gnupg"}
 SECRET_TAILS = ((".docker", "config.json"), ("gh", "hosts.yml"))
 
-# Sotto ~/.claude: ciò che governa il comportamento dell'agente. Il resto
-# (projects/, todos/, debug/...) è stato interno di Claude Code e non si tocca qui.
+# Under ~/.claude: what governs the agent's behaviour. The rest
+# (projects/, todos/, debug/...) is Claude Code's internal state and is not touched here.
 CLAUDE_HOME_GOVERNANCE = {"settings.json", "settings.local.json", "CLAUDE.md", "keybindings.json"}
 CLAUDE_HOME_GOVERNANCE_DIRS = {"commands", "skills", "agents", "rules", "output-styles"}
 CLAUDE_HOME_CODE_DIRS = {"plugins", "hooks"}
@@ -2300,17 +2299,17 @@ def relative_to_home(path: Path) -> Path | None:
 
 
 def check_read(tool_input: dict) -> None:
-    """Le letture di segreti non dipendono più da permissions.deny nelle settings."""
+    """Reads of secrets no longer depend on permissions.deny in the settings."""
     path = target_path(tool_input)
     if path is None:
         return
     if any(part == ".ssh" for part in path.parts):
-        deny(f"lettura dentro ~/.ssh ({path}): chiavi e configurazione SSH non passano dall'agente.")
+        deny(f"read inside ~/.ssh ({path}): SSH keys and configuration do not go through the agent.")
     if is_secret_path(path):
         deny(
-            f"lettura di un file di segreti ({path}): il contenuto finirebbe nella trascrizione, "
-            "che resta su disco. Per il nome di una variabile leggi .env.example; per il valore, "
-            "chiedilo all'utente. (guardrail: filesystem-shell-segreti.md)"
+            f"read of a secret file ({path}): the content would end up in the transcript, "
+            "which stays on disk. For a variable's name read .env.example; for its value, "
+            "ask the user. (guardrail: filesystem-shell-secrets.md)"
         )
 
 
@@ -2325,15 +2324,15 @@ def is_inside(path: Path, root: Path | None) -> bool:
 
 
 def check_write_guardrail(path: Path) -> None:
-    """Scritture su guardrail stesso: il suo codice, la sua configurazione, le
-    impostazioni di Claude Code. Valgono anche dove guardrail è spento (vedi `decide`).
-    Si guarda anche dove porta il percorso: `note.json` può essere un link."""
+    """Writes on guardrail itself: its code, its configuration, the Claude Code
+    settings. They apply even where guardrail is off (see `decide`).
+    Where the path leads is checked too: `note.json` can be a link."""
     try:
-        reale = path.resolve()
+        real = path.resolve()
     except (OSError, RuntimeError):
-        reale = path
-    for candidato in dict.fromkeys([path, reale]):
-        _check_write_guardrail(candidato)
+        real = path
+    for candidate in dict.fromkeys([path, real]):
+        _check_write_guardrail(candidate)
 
 
 def _check_write_guardrail(path: Path) -> None:
@@ -2342,50 +2341,50 @@ def _check_write_guardrail(path: Path) -> None:
     in_home = relative_to_home(path)
     if in_home is not None and in_home.parts[:1] == (".claude",) and len(in_home.parts) > 2 and in_home.parts[1] in CLAUDE_HOME_CODE_DIRS:
         deny(
-            f"scrittura in ~/.claude/{in_home.parts[1]} ({raw}): è il codice dei hook e dei plugin, cioè di "
-            "guardrail stesso. Si aggiorna con /plugin, mai a mano dall'agente. (guardrail: RULES-CORE.md 8)"
+            f"write in ~/.claude/{in_home.parts[1]} ({raw}): it is the code of the hooks and plugins, that is of "
+            "guardrail itself. It is updated with /plugin, never by hand by the agent. (guardrail: RULES-CORE.md 8)"
         )
 
-    # Conferme: la configurazione di guardrail e di Claude Code non si modifica da
-    # soli, sarebbe il modo elegante di aggirare un blocco (RULES-CORE.md, regola 8).
+    # Confirmations: the configuration of guardrail and of Claude Code is not modified
+    # on one's own, it would be the elegant way to work around a block (RULES-CORE.md, rule 8).
     if name.lower() == ".guardrail.json":
         ask(
-            "modifica di .guardrail.json: cambia le regole di guardrail che ti vincolano. "
-            "Decide l'utente, e il file va committato con la motivazione. (guardrail: RULES-CORE.md 8)"
+            "change to .guardrail.json: changes the guardrail rules that bind you. "
+            "The user decides, and the file must be committed with the rationale. (guardrail: RULES-CORE.md 8)"
         )
     if in_home is not None and in_home.parts[:1] == (".claude",) and (
         (len(in_home.parts) == 2 and name in CLAUDE_HOME_GOVERNANCE)
         or (len(in_home.parts) > 2 and in_home.parts[1] in CLAUDE_HOME_GOVERNANCE_DIRS)
     ):
         ask(
-            f"modifica della configurazione di Claude Code ({raw}): tocca permessi, hook, comandi o "
-            "istruzioni dell'utente. Mostra il cambiamento e fallo approvare."
+            f"change to the Claude Code configuration ({raw}): touches the user's permissions, hooks, commands or "
+            "instructions. Show the change and have it approved."
         )
-    # Lo stesso nel .claude/ di un progetto: con `enabledPlugins` o `env` le sue
-    # settings spengono guardrail lì. Da shell PROTECTED_PATH lo copre già.
-    parti = path.parts[:-1]
+    # The same in a project's .claude/: with `enabledPlugins` or `env` its
+    # settings turn guardrail off there. From the shell PROTECTED_PATH already covers it.
+    parts = path.parts[:-1]
     if in_home is None or in_home.parts[:1] != (".claude",):
-        if ".claude" in parti:
-            resto = path.parts[len(parti) - parti[::-1].index(".claude"):]
-            if resto in (("settings.json",), ("settings.local.json",), ("CLAUDE.md",)) or (
-                len(resto) > 1 and resto[0] in CLAUDE_HOME_CODE_DIRS | CLAUDE_HOME_GOVERNANCE_DIRS
+        if ".claude" in parts:
+            rest = path.parts[len(parts) - parts[::-1].index(".claude"):]
+            if rest in (("settings.json",), ("settings.local.json",), ("CLAUDE.md",)) or (
+                len(rest) > 1 and rest[0] in CLAUDE_HOME_CODE_DIRS | CLAUDE_HOME_GOVERNANCE_DIRS
             ):
                 ask(
-                    f"modifica della configurazione di Claude Code del progetto ({raw}): settings, hook e "
-                    "istruzioni possono spegnere o aggirare guardrail. Mostra il cambiamento e fallo approvare."
+                    f"change to the project's Claude Code configuration ({raw}): settings, hooks and "
+                    "instructions can turn off or work around guardrail. Show the change and have it approved."
                 )
 
 
 def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
-    """Da shell, le stesse scritture di `check_write_guardrail`, e la rimozione di
-    .guardrail.json; anche dentro `bash -c "…"` e negli script lanciati."""
-    text = backtick_in_sostituzioni(strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd))))
+    """From the shell, the same writes as `check_write_guardrail`, and the removal of
+    .guardrail.json; also inside `bash -c "…"` and in the launched scripts."""
+    text = backticks_to_substitutions(strip_inert_heredocs(strip_data_heredocs(re.sub(r"\\\n", " ", cmd))))
     check_protected_writes(text, cwd)
     if depth >= MAX_DEPTH:
         return
     for payload in inline_shell_payloads(text):
         check_bash_guardrail(payload, cwd, depth + 1)
-    # Ogni livello, non solo il primo: uno script può lanciarne un altro.
+    # Every level, not only the first: a script can launch another one.
     for path in invoked_scripts(text, cwd):
         try:
             content = path.read_text(encoding="utf-8")
@@ -2395,8 +2394,8 @@ def check_bash_guardrail(cmd: str, cwd: str = "", depth: int = 0) -> None:
             check_bash_guardrail(content, cwd, depth + 1)
         except Decision as found:
             if found.verdict == "deny":
-                deny(f"lo script {path.name} contiene un comando vietato: {found.reason}")
-            ask(f"lo script {path.name} tocca la configurazione di guardrail o di Claude Code — {found.reason}")
+                deny(f"the script {path.name} contains a forbidden command: {found.reason}")
+            ask(f"the script {path.name} touches the guardrail or Claude Code configuration — {found.reason}")
 
 
 def check_write(tool_input: dict, cwd: str) -> None:
@@ -2407,19 +2406,19 @@ def check_write(tool_input: dict, cwd: str) -> None:
     name = path.name
     in_home = relative_to_home(path)
 
-    # Blocchi secchi
+    # Hard blocks
     if any(part == ".ssh" for part in path.parts) or (SECRET_NAME.match(name) and re.search(r"id_|\.pem$|\.key$|\.p12$|\.pfx$", name)):
-        deny(f"scrittura su una chiave privata o in ~/.ssh ({raw}). Mai dall'agente.")
+        deny(f"write to a private key or inside ~/.ssh ({raw}). Never from the agent.")
     if str(path).startswith("/etc/") or str(path).startswith("/usr/"):
-        deny(f"scrittura su un file di sistema ({raw}).")
+        deny(f"write to a system file ({raw}).")
     check_write_guardrail(path)
     if is_secret_path(path):
-        ask(f"scrittura su un file di segreti ({raw}). Conferma che è voluto e che il file è gitignorato.")
+        ask(f"write to a secret file ({raw}). Confirm it is intended and that the file is gitignored.")
     if in_home is not None and len(in_home.parts) == 1 and in_home.parts[0].startswith("."):
-        ask(f"scrittura su un dotfile della home ({raw}): cambia l'ambiente dell'utente. Conferma?")
+        ask(f"write to a home dotfile ({raw}): changes the user's environment. Confirm?")
 
-    # Regola 5: nulla fuori dal progetto senza chiederlo. Lo scratchpad e lo
-    # stato interno di Claude Code (memoria, todo) sono aree di lavoro legittime.
+    # Rule 5: nothing outside the project without asking. The scratchpad and Claude
+    # Code's internal state (memory, todos) are legitimate working areas.
     root = project_root(cwd)
     if root is None:
         return
@@ -2429,8 +2428,8 @@ def check_write(tool_input: dict, cwd: str) -> None:
             allowed.append(Path(os.environ[env_key]))
     if not any(is_inside(path, base) for base in allowed):
         ask(
-            f"scrittura fuori dal progetto ({raw}; progetto: {root}). La home, altri repo e le "
-            "directory di sistema si toccano solo su richiesta esplicita. Conferma? (guardrail: RULES-CORE.md 5)"
+            f"write outside the project ({raw}; project: {root}). The home, other repos and the "
+            "system directories are touched only on explicit request. Confirm? (guardrail: RULES-CORE.md 5)"
         )
 
 
@@ -2443,11 +2442,11 @@ def decide(payload: dict) -> None:
     tool_input = payload.get("tool_input") or {}
     cwd = str(payload.get("cwd") or "")
 
-    # Dove guardrail è spento valgono solo le regole che proteggono guardrail stesso.
-    # Senza, una sessione aperta in una cartella qualunque potrebbe spegnerlo o
-    # allentarlo nei progetti dove è acceso: togliendo il loro .guardrail.json,
-    # scrivendo allow_commands in ~/.guardrail.json, toccando il codice del plugin.
-    if not attivo(cwd):
+    # Where guardrail is off only the rules that protect guardrail itself apply.
+    # Without them, a session opened in any folder could turn it off or loosen
+    # it in the projects where it is on: by removing their .guardrail.json, by
+    # writing allow_commands in ~/.guardrail.json, by touching the plugin code.
+    if not is_active(cwd):
         if tool == "Bash":
             check_bash_guardrail(str(tool_input.get("command", "")), cwd)
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
@@ -2462,14 +2461,14 @@ def decide(payload: dict) -> None:
         command = str(tool_input.get("command", ""))
         try:
             check_bash_guardrail(command, cwd)
-            sospesa = None
+            suspended = None
         except Decision as found:
             if found.verdict == "deny":
                 raise
-            sospesa = found
+            suspended = found
         check_bash(command, config, cwd)
-        if sospesa:
-            raise sospesa
+        if suspended:
+            raise suspended
     elif tool == "Read":
         check_read(tool_input)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
@@ -2501,66 +2500,66 @@ def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except RecursionError:
-        # Un input annidato oltre quanto il parser regge non si può giudicare. Lasciarlo
-        # passare vorrebbe dire che basta annidare un comando per saltare ogni controllo.
-        emit("deny", "input del tool annidato troppo a fondo per essere controllato.")
+        # An input nested beyond what the parser can take cannot be judged. Letting it
+        # through would mean that nesting a command is enough to skip every check.
+        emit("deny", "tool input nested too deep to be checked.")
         return 0
     except ValueError:
         return 0
     if not isinstance(payload, dict):
         return 0
 
-    # Il mascheramento non segue GUARDRAIL_DISABLE: spegnere i controlli non deve
-    # rimettere in chiaro i termini riservati. Lo si spegne togliendo la mappa.
+    # Masking does not follow GUARDRAIL_DISABLE: turning the checks off must not
+    # put the reserved terms back in the clear. It is turned off by removing the map.
     tool = str(payload.get("tool_name", ""))
     tool_input = payload.get("tool_input") or {}
     cwd = str(payload.get("cwd") or "")
     try:
         pairs = mask.load_pairs()
-    except mask.MappaNonValida as exc:
-        # Fail-closed: con una mappa rotta nessun risultato di tool si può mascherare.
+    except mask.InvalidMap as exc:
+        # Fail-closed: with a broken map no tool result can be masked.
         log_decision(payload, "deny", str(exc))
-        emit("deny", f"{exc}. Correggi la mappa o toglila per disattivare il mascheramento.")
+        emit("deny", f"{exc}. Fix the map or remove it to turn masking off.")
         return 0
 
-    # Cosa esegue davvero la macchina (i controlli si fanno su questo, con i termini
-    # reali) e cosa riceve il tool al posto dell'input del modello.
-    effettivo, riscritto = tool_input, None
+    # What the machine really runs (the checks are done on this, with the real
+    # terms) and what the tool receives in place of the model's input.
+    effective, rewritten = tool_input, None
     if pairs and tool == "Bash" and str(tool_input.get("command", "")).strip():
         command = str(tool_input["command"])
-        effettivo = {**tool_input, "command": mask.unmask(command, pairs)}
-        riscritto = {**tool_input, "command": mask.wrap_command(command)}
+        effective = {**tool_input, "command": mask.unmask(command, pairs)}
+        rewritten = {**tool_input, "command": mask.wrap_command(command)}
     elif pairs:
-        riscritto = mask.unmask_tool_input(tool, tool_input, cwd, pairs)
-        effettivo = riscritto or tool_input
+        rewritten = mask.unmask_tool_input(tool, tool_input, cwd, pairs)
+        effective = rewritten or tool_input
 
-    bloccato = mask.blocking_reason(tool, effettivo, pairs)
-    if bloccato:
-        log_decision(payload, "deny", bloccato)
-        emit("deny", bloccato)
+    blocked = mask.blocking_reason(tool, effective, pairs)
+    if blocked:
+        log_decision(payload, "deny", blocked)
+        emit("deny", blocked)
         return 0
 
     if os.environ.get("GUARDRAIL_DISABLE") == "1":
         log_decision(payload, "disabled", "GUARDRAIL_DISABLE=1")
-        emit(updated_input=riscritto)
+        emit(updated_input=rewritten)
         return 0
 
     try:
-        decide({**payload, "tool_input": effettivo})
+        decide({**payload, "tool_input": effective})
     except Decision as decision:
         reason = mask.mask(decision.reason, pairs)
         log_decision(payload, decision.verdict, reason)
-        emit(decision.verdict, reason, None if decision.verdict == "deny" else riscritto)
+        emit(decision.verdict, reason, None if decision.verdict == "deny" else rewritten)
         return 0
-    except Exception as exc:  # noqa: BLE001 — un bug del guard non deve mai bloccare il lavoro
-        print(f"[guardrail] errore interno, tool lasciato passare: {mask.mask(str(exc), pairs)}", file=sys.stderr)
-    emit(updated_input=riscritto)
+    except Exception as exc:  # noqa: BLE001 — a bug in the guard must never block the work
+        print(f"[guardrail] internal error, tool let through: {mask.mask(str(exc), pairs)}", file=sys.stderr)
+    emit(updated_input=rewritten)
     return 0
 
 
 def emit(verdict: str = "", reason: str = "", updated_input: dict | None = None) -> None:
-    """Stampa la risposta del hook: la decisione, se c'è, e l'input riscritto per il
-    mascheramento, se c'è. Nessuna delle due: nessun output, il tool procede."""
+    """Prints the hook's answer: the decision, if any, and the input rewritten for
+    masking, if any. Neither: no output, the tool proceeds."""
     out: dict = {"hookEventName": "PreToolUse"}
     if verdict:
         out["permissionDecision"] = verdict

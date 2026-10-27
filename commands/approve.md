@@ -1,103 +1,102 @@
 ---
-description: Approva uno script per allow_scripts — lo legge, mostra cosa fa di pericoloso, e registra la sua impronta in .guardrail.json
+description: Approves a script for allow_scripts — reads it, shows what it does that is dangerous, and records its fingerprint in .guardrail.json
 ---
 
-# Approvare uno script
+# Approving a script
 
-Ogni script invocato viene letto dal hook: se contiene un comando che guardrail
-fermerebbe, l'esito è una conferma, **ogni volta**. Su uno script di build
-lanciato venti volte al giorno quella conferma diventa rumore, e il rumore
-insegna ad approvare senza leggere.
+Every invoked script is read by the hook: if it contains a command guardrail
+would stop, the outcome is a confirmation, **every time**. On a build script
+launched twenty times a day that confirmation becomes noise, and noise teaches
+you to approve without reading.
 
-`allow_scripts` la toglie, ma lega l'esenzione all'impronta sha256 del contenuto:
-se lo script cambia, la conferma torna. Questo comando è il modo corretto di
-mettere e rinnovare quell'impronta.
+`allow_scripts` removes it, but ties the exemption to the sha256 fingerprint of
+the content: if the script changes, the confirmation comes back. This command is
+the correct way to set and renew that fingerprint.
 
-**L'approvazione la dà l'utente, non tu.** Il tuo compito è leggere, mostrare e
-registrare. Se lo script lo hai scritto tu in questa sessione, dillo prima di
-ogni altra cosa: l'utente starebbe approvando codice appena generato.
+**The approval is given by the user, not by you.** Your job is to read, show and
+record. If you wrote the script yourself in this session, say so before anything
+else: the user would be approving code that was just generated.
 
-## 0. Senza argomenti: controlla le approvazioni esistenti
+## 0. Without arguments: check the existing approvals
 
-Se `$ARGUMENTS` è vuoto, leggi `allow_scripts` da `.guardrail.json` e per ogni
-voce confronta `sha256sum` con l'impronta dichiarata. Riporta in una tabella:
+If `$ARGUMENTS` is empty, read `allow_scripts` from `.guardrail.json` and for
+each entry compare `sha256sum` with the declared fingerprint. Report in a table:
 
-| Stato | Significato |
+| Status | Meaning |
 |---|---|
-| valida | il file c'è e l'impronta corrisponde |
-| scaduta | il contenuto è cambiato: l'esenzione non vale più |
-| incompleta | la voce non dichiara `sha256`, quindi non esenta niente |
-| orfana | il path non esiste più |
+| valid | the file is there and the fingerprint matches |
+| expired | the content has changed: the exemption no longer holds |
+| incomplete | the entry declares no `sha256`, so it exempts nothing |
+| orphan | the path no longer exists |
 
-Non aggiornare niente in questa modalità: un'impronta scaduta si rinnova
-rileggendo lo script, cioè rilanciando questo comando su quel path.
+Do not update anything in this mode: an expired fingerprint is renewed by
+re-reading the script, that is, by running this command again on that path.
 
-## 1. Con un path: leggi lo script per intero
+## 1. With a path: read the script in full
 
-Usa `Read`, non `head`. Se supera le 200 righe leggilo comunque, e riassumilo per
-blocchi. Fermati subito, spiegando perché, se:
+Use `Read`, not `head`. If it exceeds 200 lines, read it anyway, and summarize it
+by blocks. Stop right away, explaining why, if:
 
-- il path non esiste, o sta fuori dal progetto corrente;
-- il file non è tracciato da git. Un file non versionato può cambiare senza
-  lasciare traccia in nessuna revisione: l'impronta lo intercetterebbe, ma non
-  c'è niente da rileggere per capire *cosa* è cambiato. Dillo, e lascia decidere.
+- the path does not exist, or lies outside the current project;
+- the file is not tracked by git. An unversioned file can change without
+  leaving a trace in any revision: the fingerprint would catch it, but there is
+  nothing to re-read to understand *what* changed. Say so, and let the user decide.
 
-## 2. Mostra cosa contiene di rilevante
+## 2. Show what it contains that matters
 
-Elenca, con il numero di riga, ogni comando che il hook fermerebbe: `rm`
-ricorsivi, `--delete`, `prune`, SQL di scrittura, letture di segreti, `sudo`,
-`curl | sh`. Poi:
+List, with the line number, every command the hook would stop: recursive `rm`,
+`--delete`, `prune`, write SQL, reads of secrets, `sudo`, `curl | sh`. Then:
 
-- **Nessun comando del genere**: lo script non ha bisogno di approvazione, perché
-  non produce nessuna conferma. Dillo e fermati senza scrivere niente.
-- **Un comando presente in `deny_commands`**: non si approva. `deny_commands`
-  vince anche dentro uno script approvato, quindi la voce sarebbe inutile e
-  bugiarda. Spiega e fermati.
+- **No such command**: the script needs no approval, because it produces no
+  confirmation. Say so and stop without writing anything.
+- **A command present in `deny_commands`**: it is not approved. `deny_commands`
+  wins even inside an approved script, so the entry would be useless and
+  misleading. Explain and stop.
 
-## 3. Se era già approvato con un'impronta diversa
+## 3. If it was already approved with a different fingerprint
 
-Mostra cosa è cambiato dall'ultima approvazione. La revisione approvata si trova
-confrontando le impronte delle versioni in git:
+Show what changed since the last approval. The approved revision is found by
+comparing the fingerprints of the versions in git:
 
 ```
-for c in $(git log --format=%H -- PERCORSO); do
-  echo "$c $(git show "$c:PERCORSO" | sha256sum | cut -d' ' -f1)"
+for c in $(git log --format=%H -- SCRIPT_PATH); do
+  echo "$c $(git show "$c:SCRIPT_PATH" | sha256sum | cut -d' ' -f1)"
 done
 ```
 
-La riga con l'impronta dichiarata in `.guardrail.json` è la revisione che
-l'utente aveva letto: mostra `git diff <quel commit> -- PERCORSO`. Se nessuna
-revisione corrisponde, dillo: lo script è stato modificato senza passare da git,
-ed è un'informazione che conta più del diff.
+The line with the fingerprint declared in `.guardrail.json` is the revision the
+user had read: show `git diff <that commit> -- SCRIPT_PATH`. If no revision
+matches, say so: the script was modified without going through git, and that is
+information that matters more than the diff.
 
-## 4. Chiedi conferma
+## 4. Ask for confirmation
 
-Mostra la voce esatta che stai per scrivere:
+Show the exact entry you are about to write:
 
 ```json
 {"path": "scripts/build\\.sh", "sha256": "625f88e4…"}
 ```
 
-Il `path` è una regex: punti escapati, ancorata al progetto quanto basta a non
-prendere omonimi in altre directory. Chiedi conferma esplicita. Se l'utente non
-conferma, non scrivere niente.
+The `path` is a regex: dots escaped, anchored to the project just enough not to
+catch namesakes in other directories. Ask for explicit confirmation. If the user
+does not confirm, write nothing.
 
-## 5. Scrivi
+## 5. Write
 
-Aggiorna `allow_scripts` in `.guardrail.json` (crea il file se manca, con le
-altre chiavi vuote). Sostituisci la voce esistente per quel path invece di
-aggiungerne una seconda. L'impronta è quella di `sha256sum PERCORSO`, presa
-**dopo** la lettura, non prima.
+Update `allow_scripts` in `.guardrail.json` (create the file if it is missing,
+with the other keys empty). Replace the existing entry for that path instead of
+adding a second one. The fingerprint is that of `sha256sum SCRIPT_PATH`, taken
+**after** the reading, not before.
 
-La scrittura farà scattare una conferma del hook: è voluto, è la garanzia che
-questo file non cambi senza che l'utente lo veda.
+The write will trigger a confirmation from the hook: that is intended, it is the
+guarantee that this file does not change without the user seeing it.
 
-## 6. Chiudi
+## 6. Close
 
-Ricorda due cose:
+Remind the user of two things:
 
-- `.guardrail.json` va committato: l'approvazione vale per chiunque lavori nel
-  repo, persone e agenti, e come il codice si rivede in una PR;
-- a ogni modifica volontaria dello script l'impronta va rinnovata, rilanciando
-  questo comando. Se qualcuno la rinnova senza rileggere, l'esenzione torna a
-  essere quello che non deve essere: fiducia in un nome.
+- `.guardrail.json` must be committed: the approval holds for whoever works in
+  the repo, people and agents, and like code it is reviewed in a PR;
+- at every deliberate change to the script the fingerprint must be renewed, by
+  running this command again. If someone renews it without re-reading, the
+  exemption goes back to being what it must not be: trust in a name.

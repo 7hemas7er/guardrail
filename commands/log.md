@@ -1,51 +1,52 @@
 ---
-description: Riassume i blocchi e le conferme recenti di guardrail, per correggere i falsi positivi con una regola migliore
+description: Summarizes guardrail's recent blocks and confirmations, to fix false positives with a better rule
 ---
 
-# Cosa ha fermato guardrail
+# What guardrail stopped
 
-Ogni `deny` e `ask` finisce in `~/.claude/guardrail.log.jsonl`, una riga JSON
-per evento con `ts`, `verdict`, `tool`, `cwd`, `session`, `reason` e i primi 400
-caratteri di `input`. Questo comando lo legge e lo riassume.
+Every `deny` and `ask` goes to `~/.claude/guardrail.log.jsonl`, one JSON line
+per event with `ts`, `verdict`, `tool`, `cwd`, `session`, `reason` and the first
+400 characters of `input`. This command reads it and summarizes it.
 
-## 1. Leggi il log
+## 1. Read the log
 
 ```
 tail -n 200 ~/.claude/guardrail.log.jsonl
 ```
 
-Se il file non esiste, guardrail non ha mai bloccato nulla su questa macchina:
-dillo e fermati. Se l'utente ha passato un argomento (`$ARGUMENTS`), usalo come
-filtro: un numero è quante righe leggere, una parola è un filtro sul `reason` o
-sulla `cwd`.
+If the file does not exist, guardrail has never blocked anything on this
+machine: say so and stop. If the user passed an argument (`$ARGUMENTS`), use it
+as a filter: a number is how many lines to read, a word is a filter on `reason`
+or on `cwd`.
 
-## 2. Raggruppa
+## 2. Group
 
-Per ogni evento, prendi la regola che ha deciso (la prima frase di `reason`) e
-raggruppa. Per ogni gruppo:
+For each event, take the rule that decided (the first sentence of `reason`) and
+group by it. For each group:
 
-- quante volte, in quante sessioni, in quali progetti (`cwd`);
-- un esempio di `input`, **con i valori sensibili oscurati**: se un input contiene
-  connection string, token o password, sostituiscili con `***` prima di
-  riportarli. Il log li ha già troncati, ma non li ha redatti.
+- how many times, in how many sessions, in which projects (`cwd`);
+- one example of `input`, **with sensitive values redacted**: if an input
+  contains connection strings, tokens or passwords, replace them with `***`
+  before reporting them. The log has already truncated them, but has not
+  redacted them.
 
-## 3. Classifica
+## 3. Classify
 
-Per ogni gruppo, dì se secondo te è:
+For each group, say whether in your view it is:
 
-- **un blocco giusto**: l'azione era davvero da fermare;
-- **un falso positivo**: l'azione era legittima e la regola è troppo larga.
-  Proponi la correzione precisa — la regex da restringere in `hooks/guard.py`,
-  o la voce `ask_commands`/`prod_patterns` da sistemare in `.guardrail.json` —
-  e il caso da aggiungere a `tests/cases.jsonl` perché non si ripeta;
-- **un tentativo di aggiramento**: lo stesso agente ha riprovato l'azione
-  bloccata con un comando equivalente (stesso `session`, `reason` diversi a
-  pochi secondi di distanza). Questo va segnalato per primo: è esattamente ciò
-  che la regola 8 vieta.
+- **a correct block**: the action really had to be stopped;
+- **a false positive**: the action was legitimate and the rule is too broad.
+  Propose the precise fix — the regex to narrow in `hooks/guard.py`, or the
+  `ask_commands`/`prod_patterns` entry to adjust in `.guardrail.json` — and the
+  case to add to `tests/cases.jsonl` so that it does not happen again;
+- **a workaround attempt**: the same agent retried the blocked action with an
+  equivalent command (same `session`, different `reason`s a few seconds apart).
+  This must be flagged first: it is exactly what rule 8 forbids.
 
-## 4. Riporta
+## 4. Report
 
-Un elenco per gruppo, dal più frequente al più raro, con la classificazione e la
-proposta. Non modificare né il log né `guard.py` né `.guardrail.json`: le
-correzioni le decide l'utente, e un `allow_commands` non è mai una proposta
-accettabile per un falso positivo — si restringe la regola, non si spegne.
+One list per group, from the most frequent to the rarest, with the
+classification and the proposal. Do not change the log, `guard.py` or
+`.guardrail.json`: the fixes are the user's decision, and an `allow_commands` is
+never an acceptable proposal for a false positive — the rule is narrowed, not
+switched off.

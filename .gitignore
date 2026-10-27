@@ -5,7 +5,7 @@ __pycache__/
 !.env.example
 .guardrail.local.json
 
-# dotfile d'ambiente che non appartengono al repo
+# environment dotfiles that do not belong to the repo
 .bashrc
 .bash_profile
 .profile

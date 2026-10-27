@@ -111,7 +111,7 @@ the agent asks you whether to turn it on, before doing anything else, mentioning
 it** (`/guardrail:setup`), **yes, basic rules** (a `.guardrail.json` with `{}`)
 or **no**. The question is not repeated for that folder: it is a choice, not an
 oversight to remind you of every time. The state lives in
-`~/.claude/guardrail.state.json`; removing the `inattivo:<folder>` entry brings
+`~/.claude/guardrail.state.json`; removing the `inactive:<folder>` entry brings
 the question back.
 
 What counts is the project the session started from and the command's working
@@ -126,13 +126,13 @@ still keeps the rules that protect itself; details in
 ## Per-project configuration
 
 Put `.guardrail.json` in the repo root. Full example in
-`examples/esempio.guardrail.json`:
+`examples/example.guardrail.json`:
 
 ```json
 {
-  "prod_mcp_servers": ["postgres", "telemetria"],
+  "prod_mcp_servers": ["postgres", "telemetry"],
   "ask_mcp_servers": ["postgres-test"],
-  "prod_patterns": ["db-produzione\\.esempio\\.com", "\\bappdb\\b(?!_)"],
+  "prod_patterns": ["db-production\\.example\\.com", "\\bappdb\\b(?!_)"],
   "deny_commands": ["scripts/deploy/(promote-to-production|rollback-production)\\.sh"],
   "ask_commands": ["scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh", "build-and-push(-fast)?\\.sh[^;|]*--skip-tests"]
 }
@@ -186,7 +186,7 @@ instruction file. Prose only: no automatic blocking.
 
 ```
 python3 tests/run.py                  # guard.py hook cases, must stay green
-python3 tests/test_attivazione.py     # on only where .guardrail.json exists
+python3 tests/test_activation.py     # on only where .guardrail.json exists
 python3 tests/test_session_start.py   # injected rules and one-time notices
 python3 tests/test_mask.py            # masking: real commands, rewritten results
 ```

@@ -1,5 +1,5 @@
 {
-  "description": "Guardrail — regole aziendali per gli agenti: blocco o conferma su comandi distruttivi, deploy con cancellazione, SQL di scrittura in produzione, file di segreti; regole essenziali iniettate a ogni sessione",
+  "description": "Guardrail — company rules for coding agents: block or confirmation on destructive commands, deploys that delete, write SQL in production, secret files; core rules injected at every session",
   "hooks": {
     "SessionStart": [
       {

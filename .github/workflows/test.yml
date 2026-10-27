@@ -7,33 +7,33 @@ on:
 
 jobs:
   hook-cases:
-    name: casi del hook guard.py
+    name: guard.py hook cases
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: manifest JSON validi
+      - name: valid JSON manifests
         run: |
           for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json examples/*.json tests/guardrail.test.json; do
             python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" && echo "ok $f"
           done
-      - name: sintassi hook
+      - name: hook syntax
         run: |
-          python3 -m py_compile hooks/guard.py hooks/mask.py hooks/session-start.py tests/run.py tests/test_session_start.py tests/test_mask.py tests/test_attivazione.py tests/test_mcp.py
+          python3 -m py_compile hooks/guard.py hooks/mask.py hooks/session-start.py tests/run.py tests/test_session_start.py tests/test_mask.py tests/test_activation.py tests/test_mcp.py
           bash -n hooks/run-python.sh tests/fixtures/*.sh
-      - name: casi del hook guard.py
+      - name: guard.py hook cases
         run: python3 tests/run.py -v
-      - name: mascheramento dei termini riservati
+      - name: masking of reserved terms
         run: python3 tests/test_mask.py
-      - name: attivazione per progetto
-        run: python3 tests/test_attivazione.py
-      - name: MCP con input annidato a fondo
+      - name: per-project activation
+        run: python3 tests/test_activation.py
+      - name: MCP with deeply nested input
         run: python3 tests/test_mcp.py
-      - name: session-start (regole, avvisi una tantum)
+      - name: session-start (rules, one-time notices)
         run: python3 tests/test_session_start.py
       - name: session-start via run-python.sh
         run: |
           out=$(echo '{}' | bash hooks/run-python.sh hooks/session-start.py)
-          echo "$out" | grep -q "regole essenziali" || { echo "RULES-CORE non iniettato"; exit 1; }
+          echo "$out" | grep -q "core rules" || { echo "RULES-CORE not injected"; exit 1; }

@@ -1,0 +1,32 @@
+{
+  "_comment": "Example configuration. Copy as .guardrail.json into the repo root and replace hosts, database names, MCP servers and scripts with the real ones. Note: here the production MCP server is called 'postgres', without 'prod' in the name, which is why it must be declared explicitly. The clone script towards the local sandbox is in ask_commands: it reads production, writes locally, and every run asks for confirmation (see services/database.md).",
+  "prod_mcp_servers": ["postgres", "telemetry"],
+  "ask_mcp_servers": ["postgres-test"],
+  "prod_patterns": [
+    "db-production\\.example\\.com",
+    "\\bappdb\\b(?!_)",
+    "\\btelemetry\\b",
+    "\\bapp-prod\\b",
+    "app\\.example\\.it"
+  ],
+  "deny_commands": [
+    "scripts/deploy/(promote-to-production|rollback-production)\\.sh",
+    "REFRESH_DB_ALLOWED=appdb_test\\b",
+    "REFRESH_DB_ALLOWED=appdb\\b"
+  ],
+  "ask_commands": [
+    "scripts/clone-prod-to-local\\.sh",
+    "scripts/deploy/containerapp/(promote-to-production|rollback-production)\\.sh",
+    "build-and-push(-fast)?\\.sh[^;|]*--skip-tests",
+    "az containerapp (update|revision|delete)",
+    "gh workflow run[^;|]*deploy-frontend"
+  ],
+  "allow_commands": [],
+  "_allow_scripts": "Scripts read and approved: the exemption holds as long as the content stays the same. The fingerprint is obtained with `sha256sum scripts/build.sh` after reading it; if the script changes, confirmation returns. An entry without sha256 exempts nothing.",
+  "allow_scripts": [
+    {
+      "path": "scripts/build\\.sh",
+      "sha256": "625f88e43b64baae03eff3c2a39e771eae5026455f53fed9b304ecc3d2d4b45f"
+    }
+  ]
+}

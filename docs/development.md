@@ -2,7 +2,7 @@
 
 ```
 python3 tests/run.py                  # guard.py hook cases, must stay green
-python3 tests/test_attivazione.py     # on only where .guardrail.json exists
+python3 tests/test_activation.py     # on only where .guardrail.json exists
 python3 tests/test_session_start.py   # injected rules and one-time notices
 python3 tests/test_mask.py            # masking: real commands, rewritten results
 ```
@@ -23,7 +23,7 @@ the matching service file.
   scripts: they must not be executed.
 
 Activation per project can't be tested through `cases.jsonl`, which always sets
-`GUARDRAIL_CONFIG` (and so turns guardrail on): `tests/test_attivazione.py` runs
+`GUARDRAIL_CONFIG` (and so turns guardrail on): `tests/test_activation.py` runs
 the hook with a fake home and fake projects instead.
 
 ## Writing files that quote dangerous commands

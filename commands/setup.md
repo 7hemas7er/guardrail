@@ -1,58 +1,57 @@
 ---
-description: Attiva e configura guardrail per questo progetto — deduce cosa è produzione, propone .guardrail.json e verifica le impostazioni di Claude Code
+description: Turns on and configures guardrail for this project — works out what is production, proposes .guardrail.json and checks the Claude Code settings
 ---
 
-# Configurare guardrail per questo progetto
+# Configuring guardrail for this project
 
-Il tuo compito è produrre un `.guardrail.json` corretto per il repo corrente e
-segnalare le impostazioni mancanti. **Non scrivi niente senza mostrarlo prima.**
+Your job is to produce a correct `.guardrail.json` for the current repo and
+flag the missing settings. **You write nothing without showing it first.**
 
-Quel file è anche ciò che **accende** guardrail qui: senza, il hook non controlla
-niente in questo progetto e le regole essenziali non entrano nel contesto. Se
-l'utente non vuole guardrail in questo progetto, fermati: la scelta è sua.
+That file is also what **turns on** guardrail here: without it, the hook checks
+nothing in this project and the core rules do not enter the context. If the
+user does not want guardrail in this project, stop: the choice is theirs.
 
-## 1. Raccogli le prove
+## 1. Gather the evidence
 
-Guarda, se esistono:
+Look at, if they exist:
 
-- `.mcp.json` e `~/.claude.json` → nomi dei server MCP e host a cui puntano
+- `.mcp.json` and `~/.claude.json` → names of the MCP servers and the hosts they point to
 - `docker-compose*.yml`, `*.tf`, `.github/workflows/`, `azure-pipelines.yml`
-- `scripts/deploy/`, `Makefile`, `package.json` (script di deploy, promote, rollback)
-- `config/database.php`, `config/*.yml`, `.env.example` → **nomi** delle connessioni
-- `git remote -v`, `README.md` → di che progetto si tratta
+- `scripts/deploy/`, `Makefile`, `package.json` (deploy, promote, rollback scripts)
+- `config/database.php`, `config/*.yml`, `.env.example` → **names** of the connections
+- `git remote -v`, `README.md` → what project this is
 
-**Regola assoluta durante la raccolta:** non stampare mai il contenuto di
-`.mcp.json`, `.env*` o di qualunque file che possa contenere credenziali. Estrai
-solo le chiavi:
+**Absolute rule while gathering:** never print the content of `.mcp.json`,
+`.env*` or any file that may contain credentials. Extract only the keys:
 
 ```
 jq -r '.mcpServers | keys[]' .mcp.json
 jq -r '.mcpServers | to_entries[] | "\(.key): \(.value.command // .value.url)"' .mcp.json | sed -E 's#(password|pwd|token|key)=[^ &"]*#\1=***#gi'
 ```
 
-Se un comando ti viene bloccato dal hook, è il comportamento atteso: non cercare
-una via alternativa, riporta il blocco e vai avanti con le altre prove.
+If a command gets blocked by the hook, that is the expected behaviour: do not
+look for an alternative route, report the block and move on with the other
+evidence.
 
-## 2. Classifica
+## 2. Classify
 
-Per ogni server MCP e per ogni host trovato, decidi: produzione, condiviso
-(test/staging usato da altri), o usa e getta. Il criterio non è il nome: un
-server che si chiama `postgres` può benissimo essere la produzione. Usa l'host,
-il database, il contesto degli script di deploy.
+For each MCP server and each host found, decide: production, shared
+(test/staging used by others), or throwaway. The criterion is not the name: a
+server called `postgres` may well be production. Use the host, the database,
+the context of the deploy scripts.
 
-Nel dubbio, classifica come produzione: un falso positivo costa una conferma in
-più, un falso negativo costa un incidente.
+When in doubt, classify as production: a false positive costs one more
+confirmation, a false negative costs an incident.
 
-Un server che scrive solo testo (documenti, note, issue) e non tocca
-infrastruttura può andare in `prose_mcp_servers`: così un documento che nomina
-"produzione" non viene scambiato per una modifica alla produzione. Proponilo
-solo se l'utente lo conferma: il testo di quel server smette di contare per il
-controllo.
+A server that only writes text (documents, notes, issues) and does not touch
+infrastructure can go in `prose_mcp_servers`: that way a document that mentions
+"production" is not taken for a change to production. Propose it only if the
+user confirms: the text of that server stops counting for the check.
 
-## 3. Proponi
+## 3. Propose
 
-Mostra all'utente una tabella — voce, valore, perché l'hai classificata così —
-e poi il `.guardrail.json` completo:
+Show the user a table — entry, value, why you classified it that way — and then
+the complete `.guardrail.json`:
 
 ```json
 {
@@ -65,70 +64,72 @@ e poi il `.guardrail.json` completo:
 }
 ```
 
-Se non hai trovato niente da classificare (nessun server MCP, nessun host,
-nessuno script di deploy), proponi il file minimo: accende guardrail con le
-regole di base.
+If you found nothing to classify (no MCP server, no host, no deploy script),
+propose the minimal file: it turns guardrail on with the basic rules.
 
 ```json
 {
-  "_commento": "Nessuna produzione raggiungibile da qui: bastano le regole di base."
+  "_comment": "No production reachable from here: the basic rules are enough."
 }
 ```
 
-Chiedi conferma esplicita prima di scrivere. La scrittura farà scattare una
-richiesta di conferma del hook, anche se guardrail qui è ancora spento: è
-voluto, è la garanzia che questo file non cambi senza che l'utente lo veda.
+Ask for explicit confirmation before writing. The write will trigger a
+confirmation request from the hook, even if guardrail here is still off: that
+is intended, it is the guarantee that this file does not change without the
+user seeing it.
 
-**Non proporre mai `allow_commands`.** È l'eccezione che disattiva le regole: la
-aggiunge un umano, motivandola nel messaggio di commit.
+**Never propose `allow_commands`.** It is the exception that switches the rules
+off: a human adds it, justifying it in the commit message.
 
-**Non scrivere mai `allow_scripts` in questo comando**, nemmeno se sai già quale
-script il progetto lancia di continuo: quella voce dichiara «ho letto questo
-contenuto», e in questa fase nessuno lo ha letto. Vedi il passo 3-bis.
+**Never write `allow_scripts` in this command**, not even if you already know
+which script the project runs all the time: that entry declares "I have read
+this content", and at this stage nobody has read it. See step 3-bis.
 
-## 3-bis. Segnala gli script da approvare, non approvarli
+## 3-bis. Flag the scripts to approve, do not approve them
 
-Ogni script invocato viene letto dal hook, e se contiene un comando bloccabile
-produce una conferma a ogni esecuzione. Individua i candidati — gli script che il
-progetto lancia spesso e che contengono comandi del genere:
+Every invoked script is read by the hook, and if it contains a blockable
+command it produces a confirmation at every run. Identify the candidates — the
+scripts the project runs often and that contain such commands:
 
-- gli `scripts` di `package.json`, i target del `Makefile`, i job della CI;
-- quello che il README dice di lanciare per build, test, deploy locale;
-- `scripts/*.sh` invocati da altri script.
+- the `scripts` in `package.json`, the `Makefile` targets, the CI jobs;
+- what the README says to run for build, test, local deploy;
+- `scripts/*.sh` invoked by other scripts.
 
-Per ognuno, una riga: path, cosa fa in una frase, e quale comando produrrebbe la
-conferma (con il numero di riga). Poi ferma qui l'elenco e indica la strada:
+For each one, one line: path, what it does in one sentence, and which command
+would produce the confirmation (with the line number). Then stop the list there
+and point the way:
 
 ```
 /guardrail:approve scripts/build.sh
 ```
 
-È quel comando che legge lo script, lo mostra all'utente e ne registra
-l'impronta. Un'esenzione scritta senza aver letto vale meno di niente: toglie la
-conferma e non aggiunge la revisione.
+That command is what reads the script, shows it to the user and records its
+fingerprint. An exemption written without reading is worth less than nothing:
+it removes the confirmation and adds no review.
 
-## 4. Verifica le impostazioni di Claude Code
+## 4. Check the Claude Code settings
 
-Leggi `~/.claude/settings.json` e controlla che ci sia:
+Read `~/.claude/settings.json` and check that it contains:
 
 ```json
 "sandbox": { "enabled": true, "autoAllowBashIfSandboxed": true }
 ```
 
-Il sandbox è l'unica protezione che nessun hook può attivare al posto
-dell'utente. Se manca, mostra la riga da aggiungere e spiega cosa cambia: i
-comandi Bash girano isolati dal resto del filesystem. Non modificare il file
-senza che l'utente te lo chieda.
+The sandbox is the only protection no hook can turn on in the user's place. If
+it is missing, show the line to add and explain what changes: Bash commands run
+isolated from the rest of the filesystem. Do not change the file unless the
+user asks you to.
 
-Le letture di `.env` e delle chiavi sono già bloccate dal hook, sia via `Read`
-che via shell: non servono più voci in `permissions.deny`.
+Reads of `.env` and of keys are already blocked by the hook, both via `Read`
+and via the shell: no more `permissions.deny` entries are needed.
 
-## 5. Chiudi
+## 5. Close
 
-Ricorda all'utente di committare `.guardrail.json`: è parte del repo, va rivisto
-come si rivede il codice, e vale per chiunque ci lavori — persone e agenti. Una
-volta committato accende guardrail anche per i colleghi che hanno il plugin; se
-l'utente lo vuole solo per sé, va in `.git/info/exclude` invece che nel commit.
+Remind the user to commit `.guardrail.json`: it is part of the repo, it is
+reviewed the way code is reviewed, and it holds for whoever works on it — people
+and agents. Once committed it turns guardrail on for colleagues who have the
+plugin too; if the user wants it for themselves only, it goes in
+`.git/info/exclude` instead of the commit.
 
-Digli anche cosa cambia da subito: il hook controlla già il prossimo comando, le
-regole essenziali entrano nel contesto dalla prossima sessione.
+Also tell them what changes right away: the hook already checks the next
+command, and the core rules enter the context from the next session.

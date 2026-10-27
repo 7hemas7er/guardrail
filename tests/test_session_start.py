@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Prova hooks/session-start.py con una home e un progetto finti.
+"""Tests hooks/session-start.py with a fake home and a fake project.
 
-Verifica che le regole essenziali entrino solo nei progetti con un
-.guardrail.json, che una cartella senza riceva una volta sola l'avviso che guardrail
-è spento, e che l'avviso sul sandbox compaia una volta sola, e solo dove guardrail
-è acceso. Esce 1 al primo fallimento.
+Checks that the core rules go in only in projects with a .guardrail.json, that a
+folder without one receives the notice that guardrail is off only once, and that
+the sandbox notice appears only once, and only where guardrail is on. Exits 1 at
+the first failure.
 """
 import json
 import os
@@ -46,54 +46,63 @@ def main() -> int:
         home = base / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
-        progetto = base / "progetto"
-        (progetto / ".git").mkdir(parents=True)
-        (progetto / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+        project = base / "project"
+        (project / ".git").mkdir(parents=True)
+        (project / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
 
-        out = run(home, progetto)
-        failures += check("cartella non configurata: niente regole", "Produzione si legge" not in out)
-        failures += check("cartella non configurata: avviso che guardrail è spento", "non è attivo" in out and "/guardrail:setup" in out)
-        failures += check("l'avviso cita la superficie di produzione", ".mcp.json" in out)
-        failures += check("l'agente deve chiedere sì/no all'utente", "AskUserQuestion" in out and "«No»" in out)
-        failures += check("cartella non configurata: niente avviso sul sandbox", "sandbox" not in out)
-        failures += check("stato salvato", (home / ".claude" / "guardrail.state.json").is_file())
+        out = run(home, project)
+        failures += check("unconfigured folder: no rules", "Production is read" not in out)
+        failures += check("unconfigured folder: notice that guardrail is off", "not active" in out and "/guardrail:setup" in out)
+        failures += check("the notice cites the production surface", ".mcp.json" in out)
+        failures += check("the agent must ask the user yes/no", "AskUserQuestion" in out and "«No»" in out)
+        failures += check("unconfigured folder: no sandbox notice", "sandbox" not in out)
+        failures += check("state saved", (home / ".claude" / "guardrail.state.json").is_file())
 
-        out2 = run(home, progetto)
-        failures += check("avviso non ripetuto alla seconda sessione", "da segnalare" not in out2)
-        failures += check("ancora niente regole", "Produzione si legge" not in out2)
+        out2 = run(home, project)
+        failures += check("notice not repeated at the second session", "to report" not in out2)
+        failures += check("still no rules", "Production is read" not in out2)
 
-        # Una cartella qualunque, senza indizi di produzione: stesso avviso, senza superficie.
-        semplice = base / "semplice"
-        (semplice / ".git").mkdir(parents=True)
-        out3 = run(home, semplice)
-        failures += check("cartella senza MCP né deploy: avviso anche qui", "non è attivo" in out3)
-        failures += check("cartella senza MCP né deploy: nessuna superficie citata", "superficie" not in out3)
+        # Any folder, without production hints: same notice, without surface.
+        plain = base / "plain"
+        (plain / ".git").mkdir(parents=True)
+        out3 = run(home, plain)
+        failures += check("folder without MCP or deploy: notice here too", "not active" in out3)
+        failures += check("folder without MCP or deploy: no surface cited", "surface" not in out3)
 
-        # L'utente lo accende: regole, e l'avviso sul sandbox spento una volta sola.
-        (progetto / ".guardrail.json").write_text("{}", encoding="utf-8")
-        out4 = run(home, progetto)
-        failures += check("progetto acceso: regole essenziali stampate", "regole essenziali" in out4 and "Produzione si legge" in out4)
-        failures += check("progetto acceso: avviso sandbox spento", "sandbox" in out4 and "spento" in out4)
-        failures += check("progetto acceso: nessun avviso di guardrail spento", "non è attivo" not in out4)
-        out5 = run(home, progetto)
-        failures += check("progetto acceso: regole anche dopo", "Produzione si legge" in out5)
-        failures += check("progetto acceso: avvisi non ripetuti", "da segnalare" not in out5)
+        # The user turns it on: rules, and the sandbox-off notice only once.
+        (project / ".guardrail.json").write_text("{}", encoding="utf-8")
+        out4 = run(home, project)
+        failures += check("project on: core rules printed", "core rules" in out4 and "Production is read" in out4)
+        failures += check("project on: sandbox-off notice", "sandbox" in out4 and "is off" in out4)
+        failures += check("project on: no guardrail-off notice", "not active" not in out4)
+        out5 = run(home, project)
+        failures += check("project on: rules also afterwards", "Production is read" in out5)
+        failures += check("project on: notices not repeated", "to report" not in out5)
 
-        # ~/.guardrail.json da solo non accende niente.
+        # ~/.guardrail.json alone turns nothing on.
         (home / ".guardrail.json").write_text("{}", encoding="utf-8")
-        out6 = run(home, semplice)
-        failures += check("~/.guardrail.json non accende le cartelle sotto la home", "Produzione si legge" not in out6)
+        out6 = run(home, plain)
+        failures += check("~/.guardrail.json does not turn on the folders under the home", "Production is read" not in out6)
 
-        # Configurato e con sandbox acceso: nessun avviso.
+        # Configured and with the sandbox on: no notice.
         (home / ".claude" / "settings.json").write_text('{"sandbox": {"enabled": true}}', encoding="utf-8")
-        altro = base / "altro"
-        (altro / ".git").mkdir(parents=True)
-        (altro / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
-        (altro / ".guardrail.json").write_text('{"prod_mcp_servers": ["postgres"]}', encoding="utf-8")
-        out7 = run(home, altro)
-        failures += check("progetto configurato e sandbox acceso: nessun avviso", "da segnalare" not in out7)
+        other = base / "other"
+        (other / ".git").mkdir(parents=True)
+        (other / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+        (other / ".guardrail.json").write_text('{"prod_mcp_servers": ["postgres"]}', encoding="utf-8")
+        out7 = run(home, other)
+        failures += check("configured project and sandbox on: no notice", "to report" not in out7)
 
-    print(f"\nsession-start: {'tutto verde' if not failures else f'{failures} fallimenti'}")
+        # Old state file (Italian keys): the notices already shown are not repeated.
+        legacy = base / "legacy"
+        (legacy / ".git").mkdir(parents=True)
+        (home / ".claude" / "guardrail.state.json").write_text(
+            json.dumps({"avvisi_mostrati": [f"inattivo:{legacy}"]}), encoding="utf-8"
+        )
+        out8 = run(home, legacy)
+        failures += check("old state file: notice counted as already shown", "not active" not in out8)
+
+    print(f"\nsession-start: {'all green' if not failures else f'{failures} failures'}")
     return 1 if failures else 0
 
 

@@ -1,145 +1,146 @@
 # Database
 
-Vale per PostgreSQL, MySQL/MariaDB, Redis, Mongo, e per ogni via d'accesso:
-`psql`/`mysql` da shell, server MCP, `artisan tinker`, script.
+Applies to PostgreSQL, MySQL/MariaDB, Redis, Mongo, and to every access path:
+`psql`/`mysql` from the shell, MCP servers, `artisan tinker`, scripts.
 
-## Ambienti
+## Environments
 
-| Ambiente | Cosa può fare l'agente | Note |
+| Environment | What the agent may do | Notes |
 |---|---|---|
-| **Produzione** | solo `SELECT`, `EXPLAIN`, letture di schema | **una query di sola lettura è sempre autorizzata**, anche in produzione; a essere vietata è la scrittura, senza eccezioni, nemmeno "una riga sola" |
-| **Test condiviso** | letture; scritture solo con conferma | altri lo usano: uno schema rotto blocca la suite di tutti |
-| **Dev locale / usa e getta** | tutto, tranne DROP DATABASE e TRUNCATE | è il posto per provare |
+| **Production** | only `SELECT`, `EXPLAIN`, schema reads | **a read-only query is always authorized**, even in production; what is forbidden is writing, with no exceptions, not even "just one row" |
+| **Shared test** | reads; writes only with confirmation | others use it: a broken schema blocks everyone's suite |
+| **Local dev / throwaway** | everything, except DROP DATABASE and TRUNCATE | it is the place to experiment |
 
-Un DB è "produzione" se il nome del server MCP è nella lista `prod_mcp_servers`
-di `.guardrail.json` o se host/nome corrispondono a `prod_patterns`. **Il nome
-del server MCP non basta a riconoscerlo**: capita che il server di produzione si
-chiami semplicemente `postgres`, senza "prod". Ogni repo dichiara i suoi.
+A DB is "production" if the MCP server name is in the `prod_mcp_servers` list
+of `.guardrail.json` or if host/name match `prod_patterns`. **The MCP server
+name is not enough to recognize it**: it happens that the production server is
+simply called `postgres`, with no "prod". Each repo declares its own.
 
-## Regole di condotta
+## Rules of conduct
 
-- Le modifiche allo schema e ai dati di produzione passano **solo** da migration
-  versionate nel repo, applicate dalla pipeline di deploy o da un operatore.
-- Prima di una query pesante in produzione: `EXPLAIN`. Un seq scan su una tabella
-  grande in orario di lavoro è un incidente.
-- Mai `migrate:fresh` o `db:wipe` fuori da un DB usa e getta: droppano anche le
-  tabelle che le migration non ricreano (tipicamente uno schema legacy creato
-  fuori dalle migration). Il 2026-07-06 un run ha distrutto un DB di test
-  condiviso.
-- I seeder che riscrivono permessi o ruoli (`RolePermissionSeeder`) si lanciano
-  solo al setup iniziale: in produzione cancellano le assegnazioni manuali.
-- `DELETE` e `UPDATE` hanno sempre un `WHERE` stretto e prima si conta con un
-  `SELECT COUNT(*)` con lo stesso predicato. Mostra il conteggio all'utente.
-- Dump e restore: `pg_dump` di produzione va solo verso un DB locale anonimizzato
-  (vedi «Ambiente di prova clonato da produzione»); mai `pg_restore --clean`
-  verso produzione.
-- Connection string con password non si scrivono in file tracciati, né in chat.
-  Se un `.mcp.json` tracciato contiene credenziali, segnalalo: è un bug.
-- Timestamp: confronta sempre nello stesso fuso. Un `timestamp` senza timezone
-  riletto come ora locale ha già prodotto tre volte lo stesso bug.
-- Identificatori SQL dinamici (nomi colonna, chiavi JSONB in `orderBy`) non sono
-  bindabili: whitelist esplicita, sempre.
+- Changes to production schema and data go **only** through migrations
+  versioned in the repo, applied by the deploy pipeline or by an operator.
+- Before a heavy query in production: `EXPLAIN`. A seq scan on a large table
+  during working hours is an incident.
+- Never `migrate:fresh` or `db:wipe` outside a throwaway DB: they also drop the
+  tables the migrations do not recreate (typically a legacy schema created
+  outside the migrations). On 2026-07-06 one run destroyed a shared test DB.
+- Seeders that rewrite permissions or roles (`RolePermissionSeeder`) run only
+  at initial setup: in production they wipe out manual assignments.
+- `DELETE` and `UPDATE` always have a tight `WHERE`, and first you count with a
+  `SELECT COUNT(*)` on the same predicate. Show the count to the user.
+- Dump and restore: a production `pg_dump` goes only to an anonymized local DB
+  (see "Test environment cloned from production"); never `pg_restore --clean`
+  towards production.
+- Connection strings with passwords are not written to tracked files, nor in
+  chat. If a tracked `.mcp.json` contains credentials, report it: it is a bug.
+- Timestamps: always compare in the same time zone. A `timestamp` without a
+  timezone read back as local time has already produced the same bug three
+  times.
+- Dynamic SQL identifiers (column names, JSONB keys in `orderBy`) cannot be
+  bound: explicit whitelist, always.
 
-## Ambiente di prova clonato da produzione
+## Test environment cloned from production
 
-Provare sul serio richiede dati veri per forma e volume. Un clone di produzione
-dentro un container locale **è consentito**, ed è preferibile all'alternativa che
-di solito prende il suo posto: provare in produzione. Le regole della tabella qui
-sopra non si allentano di un millimetro mentre il clone gira — il consenso vale
-per l'ambiente, non per la produzione.
+Testing for real requires real data in shape and volume. A clone of production
+inside a local container **is allowed**, and is preferable to the alternative
+that usually takes its place: testing in production. The rules of the table
+above do not loosen by a millimetre while the clone is running — the consent
+covers the environment, not production.
 
-Vale a queste condizioni, tutte necessarie.
+It holds under these conditions, all of them necessary.
 
-- **Una direzione sola.** Produzione è solo sorgente: `pg_dump`/`mysqldump` con
-  l'utente read-only. Nessun comando della catena ha produzione come bersaglio.
-  È l'unico modo in cui un clone fa danno, ed è quello che il hook blocca.
-- **Bersaglio usa e getta e dichiarato**: un container con nome progetto, volume
-  e porta propri (`docker compose -p appdb-sandbox`). Mai il DB di test
-  condiviso, mai la home montata dentro il container.
-- **Anonimizzazione in transito**, non "poi la faccio": il dump grezzo di una
-  tabella di persone non deve restare a riposo su disco. Lo fa lo script, fra
-  dump e restore. Vale la regola 7 di `RULES-CORE.md` anche in locale.
-- **Il dump vive nello scratchpad**, mai in un path tracciato da git, e a fine
-  lavoro si cancella per nome letterale.
-- **Il clone è uno script del repo, scritto da un umano**
-  (`scripts/clone-prod-to-local.sh`): l'agente lo invoca, non lo improvvisa. Lo
-  script legge le credenziali dall'ambiente e fallisce se mancano; l'agente non
-  le vede e non le stampa. Uno di riferimento, da copiare e adattare, è in
+- **One direction only.** Production is only the source: `pg_dump`/`mysqldump`
+  with the read-only user. No command in the chain has production as its
+  target. That is the only way a clone does damage, and it is what the hook
+  blocks.
+- **A throwaway, declared target**: a container with its own project name,
+  volume and port (`docker compose -p appdb-sandbox`). Never the shared test DB,
+  never the home directory mounted inside the container.
+- **Anonymization in transit**, not "I'll do it later": the raw dump of a
+  table of people must not stay at rest on disk. The script does it, between
+  dump and restore. Rule 7 of `RULES-CORE.md` holds locally too.
+- **The dump lives in the scratchpad**, never in a git-tracked path, and at the
+  end of the work it is deleted by literal name.
+- **The clone is a script in the repo, written by a human**
+  (`scripts/clone-prod-to-local.sh`): the agent invokes it, it does not
+  improvise one. The script reads the credentials from the environment and
+  fails if they are missing; the agent does not see them and does not print
+  them. A reference one, to copy and adapt, is in
   [`examples/clone-prod-to-local.sh`](../examples/clone-prod-to-local.sh).
-- **Dichiaralo in `ask_commands`** dentro `.guardrail.json`: ogni clone chiede
-  conferma, senza che nessuno debba toccare le regole sul database di produzione.
-  ⚠️ In modalità auto quella conferma la concede l'agente: se il clone deve
-  passare per forza da un umano, la voce va in `deny_commands` e lo lancia una
-  persona fuori dalla sessione.
+- **Declare it in `ask_commands`** inside `.guardrail.json`: every clone asks
+  for confirmation, without anyone having to touch the rules on the production
+  database. ⚠️ In auto mode that confirmation is granted by the agent: if the
+  clone must go through a human no matter what, the entry goes in
+  `deny_commands` and a person launches it outside the session.
 
-## Cosa fa rispettare il hook
+## What the hook enforces
 
-| Azione | Esito |
+| Action | Outcome |
 |---|---|
-| SQL di scrittura (INSERT/UPDATE/DELETE/DDL) verso un server MCP o host di produzione | BLOCCO, con la query mostrata |
-| SQL di scrittura verso un server MCP in `ask_mcp_servers` | CONFERMA, con la query mostrata |
-| Payload SQL che il hook non riesce a classificare, verso un server MCP di produzione | BLOCCO, con la query mostrata |
-| Stesso payload verso un server MCP condiviso | CONFERMA, con la query mostrata |
-| `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE`, su qualunque ambiente | BLOCCO |
-| `DELETE FROM` o `UPDATE … SET` senza `WHERE` | BLOCCO |
-| `dropdb`, `pg_restore --clean` verso produzione | BLOCCO |
-| `psql`/`mysql` con `-f`, `<` o una pipe in ingresso, e un bersaglio di produzione | BLOCCO |
-| `pg_restore -d` verso un bersaglio di produzione, anche senza `--clean` | BLOCCO |
-| `pg_dump` di produzione verso un bersaglio locale (il clone) | permesso |
-| `redis-cli FLUSHALL` / `FLUSHDB` | BLOCCO |
-| `artisan migrate:fresh`, `db:wipe`, `migrate:reset` | BLOCCO |
-| `artisan migrate:rollback`, `db:seed --class=RolePermissionSeeder` | CONFERMA |
-| Tool MCP non SQL con operazione distruttiva (`delete`, `drop`, `purge`, `reset`…) su un server di produzione, o con parametri che corrispondono a `prod_patterns` | BLOCCO |
-| Stessa operazione su qualunque altro server | CONFERMA |
-| Tool MCP non SQL con operazione di modifica (`create`, `update`, `restart`, `scale`…) su produzione | BLOCCO |
-| Stessa operazione su un server in `ask_mcp_servers` | CONFERMA |
+| Write SQL (INSERT/UPDATE/DELETE/DDL) towards a production MCP server or host | BLOCK, with the query shown |
+| Write SQL towards an MCP server in `ask_mcp_servers` | CONFIRM, with the query shown |
+| SQL payload the hook cannot classify, towards a production MCP server | BLOCK, with the query shown |
+| Same payload towards a shared MCP server | CONFIRM, with the query shown |
+| `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE`, on any environment | BLOCK |
+| `DELETE FROM` or `UPDATE … SET` without `WHERE` | BLOCK |
+| `dropdb`, `pg_restore --clean` towards production | BLOCK |
+| `psql`/`mysql` with `-f`, `<` or a pipe on input, and a production target | BLOCK |
+| `pg_restore -d` towards a production target, even without `--clean` | BLOCK |
+| Production `pg_dump` towards a local target (the clone) | allowed |
+| `redis-cli FLUSHALL` / `FLUSHDB` | BLOCK |
+| `artisan migrate:fresh`, `db:wipe`, `migrate:reset` | BLOCK |
+| `artisan migrate:rollback`, `db:seed --class=RolePermissionSeeder` | CONFIRM |
+| Non-SQL MCP tool with a destructive operation (`delete`, `drop`, `purge`, `reset`…) on a production server, or with parameters matching `prod_patterns` | BLOCK |
+| Same operation on any other server | CONFIRM |
+| Non-SQL MCP tool with a modifying operation (`create`, `update`, `restart`, `scale`…) on production | BLOCK |
+| Same operation on a server in `ask_mcp_servers` | CONFIRM |
 
-Per le ultime tre righe il bersaglio non è "la parola produzione da qualche parte
-nel comando", ma host, nome del database, URI di connessione e variabili
-d'ambiente di connessione. Un file di nome `dump_produzione.sql` ripristinato in
-locale non è un bersaglio di produzione, e non viene bloccato.
+For the last three rows the target is not "the word production somewhere in
+the command", but host, database name, connection URI and connection
+environment variables. A file named `dump_production.sql` restored locally is
+not a production target, and is not blocked.
 
-Per i server MCP non SQL (Azure, GitHub, filesystem…) l'intenzione si legge dal
-nome del tool e dai campi che descrivono l'operazione (`command`, `action`,
-`method`, `state`); i tool di sola lettura (`get_*`, `list_*`, `search_*`) non
-vengono toccati. Chiudere il browser di prova o una sua scheda (Playwright,
-Chrome DevTools) non è un'operazione distruttiva. Il campo `query` di un tool di
-documentazione (context7: `query-docs`, `resolve-library-id`) è una domanda, non
-SQL, e non viene classificato come tale.
+For non-SQL MCP servers (Azure, GitHub, filesystem…) the intent is read from
+the tool name and from the fields that describe the operation (`command`,
+`action`, `method`, `state`); read-only tools (`get_*`, `list_*`, `search_*`)
+are left alone. Closing the test browser or one of its tabs (Playwright,
+Chrome DevTools) is not a destructive operation. The `query` field of a
+documentation tool (context7: `query-docs`, `resolve-library-id`) is a
+question, not SQL, and is not classified as such.
 
-### Come viene classificato un payload SQL via MCP
+### How an SQL payload via MCP is classified
 
-Il testo viene attraversato una volta sola tenendo lo stato — literal fra apici
-(con `''` raddoppiato), dollar-quote con tag, commento di riga, commento a
-blocco annidato — e di literal e commenti resta il guscio vuoto. Serve perché
-letterali e commenti si intrecciano: un apice dentro `/* … */` non è un apice
-per il database, ma per una ricerca testuale sì, e in quel finto literal ci si
-nasconde una `DELETE`. Vale **solo** per il SQL puro: in una riga di shell gli
-apici delimitano il payload di `psql -c '...'`, quindi lì il testo si valuta per
-intero.
+The text is walked once, keeping state — quoted literal (with doubled `''`),
+dollar-quote with tag, line comment, nested block comment — and of literals
+and comments only the empty shell remains. This is needed because literals
+and comments intertwine: a quote inside `/* … */` is not a quote for the
+database, but it is for a text search, and a `DELETE` hides in that fake
+literal. It holds **only** for pure SQL: on a shell line the quotes delimit
+the payload of `psql -c '...'`, so there the text is evaluated whole.
 
-Sullo scheletro la risposta è una di tre:
+On the skeleton the answer is one of three:
 
-| | Cosa vuol dire | Produzione | Condiviso |
+| | What it means | Production | Shared |
 |---|---|---|---|
-| **lettura** | ogni istruzione comincia per `SELECT`/`WITH`/`EXPLAIN`… o delimita una transazione, e nessuna scrive | permessa, senza attrito | permessa |
-| **scrittura** | c'è un verbo di scrittura, un `SELECT … INTO`, un `INTO OUTFILE` | BLOCCO | CONFERMA |
-| **incerta** | un literal o un commento resta aperto; oppure l'istruzione non si classifica (`CALL`, `DO $$ … $$`, `COPY … FROM`); oppure compare una funzione che legge solo all'apparenza (`dblink`, `pg_read_file`, `pg_terminate_backend`, `setval`…) | BLOCCO | CONFERMA |
+| **read** | every statement begins with `SELECT`/`WITH`/`EXPLAIN`… or delimits a transaction, and none writes | allowed, no friction | allowed |
+| **write** | there is a write verb, a `SELECT … INTO`, an `INTO OUTFILE` | BLOCK | CONFIRM |
+| **uncertain** | a literal or a comment is left open; or the statement cannot be classified (`CALL`, `DO $$ … $$`, `COPY … FROM`); or a function appears that only looks like a read (`dblink`, `pg_read_file`, `pg_terminate_backend`, `setval`…) | BLOCK | CONFIRM |
 
-`incerta` non è un ripiego: è la risposta onesta quando il confine fra codice e
-dati non si legge. Un `SELECT dblink('…', 'DELETE FROM utenti')` è una `SELECT`
-solo di facciata — il SQL che esegue sta dentro un literal, cioè esattamente
-dove lo scheletro non guarda.
+`uncertain` is not a fallback: it is the honest answer when the boundary
+between code and data cannot be read. A `SELECT dblink('…', 'DELETE FROM users')`
+is a `SELECT` only on the surface — the SQL it executes sits inside a literal,
+which is exactly where the skeleton does not look.
 
-**La query viene mostrata** nel messaggio di blocco o di conferma, troncata e con
-le credenziali redatte: chi decide deve vedere cosa girerebbe. I valori restano
-in chiaro, perché sono ciò che rende la query giudicabile — e quindi finiscono
-nella trascrizione e nel log: se sono dati personali vale la regola 7, e la
-query si guarda, non si copia altrove.
+**The query is shown** in the block or confirmation message, truncated and
+with credentials redacted: whoever decides must see what would run. The values
+stay in clear, because they are what makes the query judgeable — and so they
+end up in the transcript and in the log: if they are personal data, rule 7
+applies, and the query is looked at, not copied elsewhere.
 
-Su produzione l'esito è **BLOCCO**, non conferma, anche quando la query
-sembrerebbe innocua. In modalità auto la conferma la concede l'agente: se la
-decisione deve essere di un umano, l'unico esito che non si scavalca è il blocco.
-Per ripartire: riscrivi la query senza commenti e con i literal chiusi, così
-viene riconosciuta come lettura; se deve davvero scrivere, la esegue un
-operatore.
+On production the outcome is **BLOCK**, not confirmation, even when the query
+would seem harmless. In auto mode the confirmation is granted by the agent: if
+the decision must be a human's, the only outcome that cannot be overridden is
+the block. To get going again: rewrite the query without comments and with the
+literals closed, so it is recognized as a read; if it really must write, an
+operator runs it.

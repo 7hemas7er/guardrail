@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Prova end-to-end del mascheramento: il comando riscritto da guard.py viene eseguito
-davvero con bash, come farebbe Claude Code, e si controlla cosa arriva al modello.
+"""End-to-end test of masking: the command rewritten by guard.py is really run
+with bash, as Claude Code would, and what reaches the model is checked.
 
-Verifica anche la riscrittura dei risultati dei tool (`mask.py output`, PostToolUse) e
-l'hook UserPromptSubmit (`mask.py prompt`). Usa la mappa di prova
-tests/fixtures/mask.tsv. Esce 1 se anche un solo controllo fallisce.
+It also checks the rewriting of tool results (`mask.py output`, PostToolUse) and
+the UserPromptSubmit hook (`mask.py prompt`). Uses the test map
+tests/fixtures/mask.tsv. Exits 1 if even a single check fails.
 """
 import json
 import os
@@ -15,45 +15,45 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GUARD = ROOT / "hooks" / "guard.py"
 MASK = ROOT / "hooks" / "mask.py"
-MAPPA = ROOT / "tests" / "fixtures" / "mask.tsv"
+MAP = ROOT / "tests" / "fixtures" / "mask.tsv"
 ENV = dict(
     os.environ,
-    GUARDRAIL_MASK_MAP=str(MAPPA),
+    GUARDRAIL_MASK_MAP=str(MAP),
     GUARDRAIL_CONFIG=str(ROOT / "tests" / "guardrail.test.json"),
 )
 ENV.pop("GUARDRAIL_DISABLE", None)
 
 
-def riscrivi(comando: str) -> str:
-    payload = {"tool_name": "Bash", "tool_input": {"command": comando}, "cwd": str(ROOT), "session_id": "test"}
+def rewrite(command: str) -> str:
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(ROOT), "session_id": "test"}
     proc = subprocess.run(
         [sys.executable, str(GUARD)], input=json.dumps(payload), capture_output=True, text=True, env=ENV, check=True
     )
     return json.loads(proc.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
 
 
-def esegui(comando: str) -> subprocess.CompletedProcess:
-    """Come il tool Bash: il comando riscritto passa a una shell."""
+def run_command(command: str) -> subprocess.CompletedProcess:
+    """Like the Bash tool: the rewritten command goes to a shell."""
     return subprocess.run(
-        ["bash", "-c", riscrivi(comando)], capture_output=True, text=True, env=ENV, cwd=ROOT, timeout=30, check=False
+        ["bash", "-c", rewrite(command)], capture_output=True, text=True, env=ENV, cwd=ROOT, timeout=30, check=False
     )
 
 
-def prompt(testo: str) -> dict:
+def prompt(text: str) -> dict:
     proc = subprocess.run(
         [sys.executable, str(MASK), "prompt"],
-        input=json.dumps({"prompt": testo, "session_id": "test"}),
+        input=json.dumps({"prompt": text, "session_id": "test"}),
         capture_output=True, text=True, env=ENV, check=True,
     )
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
-def output(tool: str, risultato) -> object:
-    """Il risultato che il modello vedrebbe dopo il hook PostToolUse, o None se il
-    hook lo lascia com'è."""
+def output(tool: str, result) -> object:
+    """The result the model would see after the PostToolUse hook, or None if the
+    hook leaves it as it is."""
     proc = subprocess.run(
         [sys.executable, str(MASK), "output"],
-        input=json.dumps({"tool_name": tool, "tool_input": {}, "tool_response": risultato}),
+        input=json.dumps({"tool_name": tool, "tool_input": {}, "tool_response": result}),
         capture_output=True, text=True, env=ENV, check=True,
     )
     if not proc.stdout.strip():
@@ -61,75 +61,75 @@ def output(tool: str, risultato) -> object:
     return json.loads(proc.stdout)["hookSpecificOutput"]["updatedToolOutput"]
 
 
-def check(nome: str, condizione: bool) -> int:
-    print(("ok   " if condizione else "FAIL ") + nome)
-    return 0 if condizione else 1
+def check(name: str, condition: bool) -> int:
+    print(("ok   " if condition else "FAIL ") + name)
+    return 0 if condition else 1
 
 
 def main() -> int:
-    falliti = 0
+    failures = 0
 
-    r = esegui("echo nas-magazzino.rete.lan NAS-MAGAZZINO Magazzino")
-    falliti += check(
-        "l'output esce mascherato, con le maiuscole dell'originale",
-        r.stdout == "nas-sede1.rete.lan NAS-SEDE1 Sede1\n",
+    r = run_command("echo nas-warehouse.net.lan NAS-WAREHOUSE Warehouse")
+    failures += check(
+        "the output comes out masked, with the capitals of the original",
+        r.stdout == "nas-site1.net.lan NAS-SITE1 Site1\n",
     )
 
-    r = esegui("printf '%s\\n' nas-sede1.rete.lan | tr a-z A-Z")
-    falliti += check(
-        "il segnaposto nel comando diventa il termine reale, e in uscita torna segnaposto",
-        r.stdout == "NAS-SEDE1.RETE.LAN\n",
+    r = run_command("printf '%s\\n' nas-site1.net.lan | tr a-z A-Z")
+    failures += check(
+        "the placeholder in the command becomes the real term, and on the way out it is a placeholder again",
+        r.stdout == "NAS-SITE1.NET.LAN\n",
     )
 
-    r = esegui("ls /nessuna/dir/magazzino")
-    falliti += check(
-        "anche l'errore di un comando fallito esce mascherato",
-        "sede1" in r.stdout and "magazzino" not in r.stdout.lower() and r.returncode != 0,
+    r = run_command("ls /no/such/dir/warehouse")
+    failures += check(
+        "even the error of a failed command comes out masked",
+        "site1" in r.stdout and "warehouse" not in r.stdout.lower() and r.returncode != 0,
     )
 
-    r = esegui("echo casale magazzinone")
-    falliti += check("una parola che contiene il nome non si tocca", r.stdout == "casale magazzinone\n")
+    r = run_command("echo warehouses megawarehouse")
+    failures += check("a word that contains the name is untouched", r.stdout == "warehouses megawarehouse\n")
 
-    r = esegui("echo magazzino >&2; exit 3")
-    falliti += check("stderr mascherato ed exit code conservato", r.stdout == "sede1\n" and r.returncode == 3)
+    r = run_command("echo warehouse >&2; exit 3")
+    failures += check("stderr masked and exit code preserved", r.stdout == "site1\n" and r.returncode == 3)
 
-    r = esegui("cat <<'__GUARDRAIL_MASK__'\nmagazzino\n__GUARDRAIL_MASK__")
-    falliti += check("un heredoc col delimitatore del runner non spezza il comando", r.stdout == "sede1\n")
+    r = run_command("cat <<'__GUARDRAIL_MASK__'\nwarehouse\n__GUARDRAIL_MASK__")
+    failures += check("a heredoc with the runner's delimiter does not break the command", r.stdout == "site1\n")
 
-    r = esegui("echo db-produzione.esempio.com")
-    falliti += check("nomi con i punti", r.stdout == "dbuno\n")
+    r = run_command("echo db-production.example.com")
+    failures += check("names with dots", r.stdout == "dbone\n")
 
-    riscritto = riscrivi("ping -c1 nas-sede1.rete.lan")
-    falliti += check("il comando riscritto non contiene nomi reali", "magazzino" not in riscritto.lower())
+    rewritten = rewrite("ping -c1 nas-site1.net.lan")
+    failures += check("the rewritten command contains no real names", "warehouse" not in rewritten.lower())
 
-    esito = prompt("fai un ping a nas-Magazzino.rete.lan")
-    falliti += check(
-        "prompt con un nome reale: bloccato, e il motivo suggerisce il segnaposto",
-        esito.get("decision") == "block" and "sede1" in esito.get("reason", ""),
+    outcome = prompt("ping nas-Warehouse.net.lan")
+    failures += check(
+        "prompt with a real name: blocked, and the reason suggests the placeholder",
+        outcome.get("decision") == "block" and "site1" in outcome.get("reason", ""),
     )
-    falliti += check("prompt senza nomi reali: passa", prompt("fai un ping a nas-sede1.rete.lan") == {})
+    failures += check("prompt without real names: passes", prompt("ping nas-site1.net.lan") == {})
 
-    letto = {"type": "text", "file": {"filePath": "/x/nas-magazzino.txt", "content": "Magazzino e MAGAZZINO\n", "numLines": 1}}
-    falliti += check(
-        "risultato del Read: ogni stringa mascherata, chiavi e numeri intatti",
-        output("Read", letto) == {"type": "text", "file": {
-            "filePath": "/x/nas-sede1.txt", "content": "Sede1 e SEDE1\n", "numLines": 1,
+    read = {"type": "text", "file": {"filePath": "/x/nas-warehouse.txt", "content": "Warehouse and WAREHOUSE\n", "numLines": 1}}
+    failures += check(
+        "Read result: every string masked, keys and numbers intact",
+        output("Read", read) == {"type": "text", "file": {
+            "filePath": "/x/nas-site1.txt", "content": "Site1 and SITE1\n", "numLines": 1,
         }},
     )
-    mcp = [{"type": "text", "text": "host magazzino attivo"}]
-    falliti += check(
-        "risultato MCP a blocchi: mascherato",
-        output("mcp__x__y", mcp) == [{"type": "text", "text": "host sede1 attivo"}],
+    mcp = [{"type": "text", "text": "host warehouse up"}]
+    failures += check(
+        "MCP result in blocks: masked",
+        output("mcp__x__y", mcp) == [{"type": "text", "text": "host site1 up"}],
     )
-    immagine = {"type": "image", "file": {"base64": "AAA/magazzino+BBB", "type": "image/png"}}
-    falliti += check("dati base64 di un'immagine: non toccati", output("Read", immagine) is None)
-    falliti += check(
-        "risultato senza termini reali: nessuna riscrittura",
-        output("Grep", {"mode": "content", "content": "niente da nascondere", "numLines": 1}) is None,
+    image = {"type": "image", "file": {"base64": "AAA/warehouse+BBB", "type": "image/png"}}
+    failures += check("base64 data of an image: untouched", output("Read", image) is None)
+    failures += check(
+        "result without real terms: no rewriting",
+        output("Grep", {"mode": "content", "content": "nothing to hide", "numLines": 1}) is None,
     )
 
-    print(f"\n{'tutto verde' if not falliti else f'{falliti} controlli falliti'}")
-    return 1 if falliti else 0
+    print(f"\n{'all green' if not failures else f'{failures} checks failed'}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ asks for confirmation; a
 for; the hook checks a script before the command runs, so a script written and
 launched in the same command is not seen in its final form. These rules protect
 against an agent that makes a mistake, not one looking for the gap. The details
-per rule are in [services/filesystem-shell-segreti.md](../services/filesystem-shell-segreti.md).
+per rule are in [services/filesystem-shell-secrets.md](../services/filesystem-shell-secrets.md).
 
 A copy of a project in a temporary folder (`/tmp`, `$TMPDIR`) outside the home —
 a `git checkout-index` or `cp -r` into the scratchpad — carries its own
