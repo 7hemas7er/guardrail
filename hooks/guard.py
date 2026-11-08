@@ -365,20 +365,35 @@ FIND_DELETE = re.compile(
 # 150 of the 174 rm decisions in real use were cleanups of such a path, each of
 # them retried by the agent with the literal path — same effect, one wasted turn.
 TEMP_ROOT = r"(?:\$\{TMPDIR(?::-/(?:var/)?tmp)?\}|\$TMPDIR|/tmp|/var/tmp)"
-# The command gives TMPDIR a value of its own (`TMPDIR=/ rm -rf $TMPDIR/home`,
-# `export TMPDIR=…`, `unset TMPDIR`): then `$TMPDIR` is whatever it says, and
-# nothing under it is exempt.
-TMPDIR_TAMPERED = re.compile(
-    r"(?:^|[\s;&|({])(?:(?:export|declare|local|readonly)\s+(?:-\w+\s+)*)?TMPDIR=|\bunset\s+(?:-\w\s+)*TMPDIR\b"
-)
 TEMP_TARGET = re.compile(TEMP_ROOT + r"/(?P<first>[\w][\w.@+=,-]*\*?)(?:/|$)")
 TEMP_ASSIGNMENT = re.compile(r"(?:^|[;&|(\n]\s*)(?P<name>[A-Za-z_]\w*)=(?P<value>[\"']?" + TEMP_ROOT + r"/[^\s;&|()]*)")
-# Everything that gives a variable a value: `X=`, `for X in`, `read X`, `export X=`.
+# Everything that gives a variable a value: `X=`, `X+=`, `for X in`, `read X`,
+# `printf -v X`, `declare/typeset/local/export/readonly/mapfile/readarray X`,
+# `getopts … X`, `unset X`.
 ANY_ASSIGNMENT = re.compile(
-    r"(?:^|[;&|(\n]\s*|\s)(?P<name>[A-Za-z_]\w*)="
+    r"(?:^|[;&|({\n]\s*|\s)(?P<name>[A-Za-z_]\w*)\+?="
     r"|\bfor\s+(?P<loop>[A-Za-z_]\w*)\s+in\b"
-    r"|\bread\s+(?:-\w+\s+)*(?P<read>[A-Za-z_]\w*)\b"
+    r"|\b(?:read|unset|printf\s+-v|declare|typeset|local|export|readonly|mapfile|readarray)\s+(?:-\w+\s+)*(?P<decl>[A-Za-z_]\w*)\b"
+    r"|\bgetopts\s+\S+\s+(?P<opt>[A-Za-z_]\w*)\b"
 )
+# `eval` and `source` give variables values the text does not show: with them in
+# the command nothing is exempt.
+OPAQUE_SHELL = re.compile(r"(?:^|[;&|({\s])(?:eval|source|\.)\s")
+
+
+def assigned_names(cmd: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for m in ANY_ASSIGNMENT.finditer(cmd):
+        name = m.group("name") or m.group("loop") or m.group("decl") or m.group("opt")
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def tmpdir_tampered(cmd: str) -> bool:
+    """The command gives TMPDIR a value of its own (`TMPDIR=/ rm -rf $TMPDIR/home`,
+    `export TMPDIR`, `read TMPDIR`, `unset TMPDIR`, or anything through `eval`):
+    then `$TMPDIR` is whatever it says, and nothing under it is exempt."""
+    return "TMPDIR" in assigned_names(cmd) or OPAQUE_SHELL.search(cmd) is not None
 
 
 def temp_aliases(cmd: str) -> dict[str, str]:
@@ -386,10 +401,7 @@ def temp_aliases(cmd: str) -> dict[str, str]:
     suffix: in `S=$TMPDIR/snap && rm -rf $S` the target of rm is `$TMPDIR/snap`.
     A variable assigned twice, or to something not literal (`$(mktemp -d)`), stays
     opaque."""
-    counts: dict[str, int] = {}
-    for m in ANY_ASSIGNMENT.finditer(cmd):
-        name = m.group("name") or m.group("loop") or m.group("read")
-        counts[name] = counts.get(name, 0) + 1
+    counts = assigned_names(cmd)
     aliases: dict[str, str] = {}
     for m in TEMP_ASSIGNMENT.finditer(cmd):
         name, value = m.group("name"), m.group("value").strip("\"'")
@@ -410,6 +422,9 @@ def temp_target(arg: str, aliases: dict[str, str]) -> str | None:
     found = TEMP_TARGET.match(bare)
     if not found or ".." in bare.split("/"):
         return None
+    # After the root, literal only: `$TMPDIR/a/$X` with X=`..` leaves the folder.
+    if re.search(r"[$`{}\[\]?*]", bare[found.end("first"):]):
+        return None
     first = found.group("first").rstrip("*")
     if first and bare.startswith("$") and os.path.lexists("/" + first):
         return None
@@ -417,7 +432,7 @@ def temp_target(arg: str, aliases: dict[str, str]) -> str | None:
 
 
 def check_rm(cmd: str) -> None:
-    tampered = TMPDIR_TAMPERED.search(cmd) is not None
+    tampered = tmpdir_tampered(cmd)
     aliases = {} if tampered else temp_aliases(cmd)
     for match in RM_ANY.finditer(cmd):
         args = match.group("args")
@@ -1180,22 +1195,103 @@ def strip_data_heredocs(text: str) -> str:
 # `git commit -m "…"`, `git tag -m`, `git merge -m`: the quoted message is prose.
 # On 2026-10-12 a commit that explained why `deploy-ftp.py --plain-ftp` is
 # forbidden was itself denied by the project rule that names it.
-# Only in a `git commit|tag|merge|stash|notes` segment, and only a message that
-# the shell leaves alone: single quotes, or double quotes without `$` and
-# backticks (`-m "$(scripts/deploy/promote.sh)"` runs the script).
-COMMIT_MESSAGE = re.compile(
-    r"""(?P<head>\bgit\s+(?:-\S+\s+)*(?:commit|tag|merge|stash|notes)\b[^;&|\n]*?\s)"""
-    r"""(?P<flag>-m|--message)(?P<sep>=|\s+)(?:"(?:[^"\\$`]|\\[^$`])*"|'[^']*')"""
-)
+# `git commit -m "…"`: the quoted message is prose for the project regexes, when
+# the shell leaves it alone (single quotes, or double quotes without `$` and
+# backticks). The words come from a scanner that tracks the quote state like the
+# shell does: a regex blind to it took `--trailer "x -m 'y" ; evil.sh ; echo "z'"`
+# for one single-quoted message and hid the `evil.sh` the shell runs
+# (security review, 2026-11-08). Unbalanced quotes: nothing is stripped.
+GIT_MESSAGE_COMMANDS = frozenset({"commit", "tag", "merge", "stash", "notes"})
+GIT_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+
+
+def quoted_words(text: str) -> list[list[list[tuple[str, int, int, bool]]]] | None:
+    """Segments of words of parts. A part is (kind, start, end, active): kind is
+    "bare", "single" or "double"; `start:end` is its raw span, quotes included;
+    `active` says a double-quoted part carries `$` or a backtick. None if a
+    quote never closes."""
+    segments: list[list[list[tuple[str, int, int, bool]]]] = [[]]
+    word: list[tuple[str, int, int, bool]] = []
+    i, n = 0, len(text)
+
+    def end_word() -> None:
+        nonlocal word
+        if word:
+            segments[-1].append(word)
+            word = []
+
+    while i < n:
+        c = text[i]
+        if c in " \t":
+            end_word()
+            i += 1
+        elif c in ";&|\n()":
+            end_word()
+            if segments[-1]:
+                segments.append([])
+            i += 1
+        elif c == "'":
+            close = text.find("'", i + 1)
+            if close < 0:
+                return None
+            word.append(("single", i, close + 1, False))
+            i = close + 1
+        elif c == '"':
+            j, active = i + 1, False
+            while j < n and text[j] != '"':
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] in "$`":
+                    active = True
+                j += 1
+            if j >= n:
+                return None
+            word.append(("double", i, j + 1, active))
+            i = j + 1
+        else:
+            j = i
+            while j < n and text[j] not in " \t;&|\n()'\"":
+                j += 2 if text[j] == "\\" else 1
+            j = min(j, n)
+            word.append(("bare", i, j, False))
+            i = j
+    end_word()
+    return segments
+
+
+def inert_message(parts: list[tuple[str, int, int, bool]]) -> bool:
+    return bool(parts) and all(kind != "bare" and not active for kind, _, _, active in parts)
 
 
 def strip_commit_messages(text: str) -> str:
-    """The quoted argument of `-m`/`--message` emptied: a message is not a command."""
-    # The placeholder is not quoted, so it is not matched again (`""` would be: endless loop).
-    while True:
-        text, n = COMMIT_MESSAGE.subn(lambda m: f"{m.group('head')}{m.group('flag')}{m.group('sep')}MESSAGE", text)
-        if not n:
-            return text
+    """The quoted argument of `-m`/`--message` of git commit, tag, merge, stash and
+    notes replaced by MESSAGE: a message is not a command."""
+    segments = quoted_words(text)
+    if segments is None:
+        return text
+    spans: list[tuple[int, int]] = []
+    for words in segments:
+        texts = ["".join(text[a:b] for _, a, b, _ in w) for w in words]
+        k = 0
+        while k < len(texts) and re.fullmatch(r"[A-Za-z_]\w*=.*", texts[k]):
+            k += 1
+        if k >= len(texts) or texts[k] != "git":
+            continue
+        k += 1
+        while k < len(texts) and texts[k].startswith("-"):
+            k += 2 if texts[k] in GIT_VALUE_OPTIONS else 1
+        if k >= len(texts) or texts[k] not in GIT_MESSAGE_COMMANDS:
+            continue
+        for idx in range(k + 1, len(words)):
+            parts, raw = words[idx], texts[idx]
+            if raw in ("-m", "--message") and idx + 1 < len(words) and inert_message(words[idx + 1]):
+                spans.append((words[idx + 1][0][1], words[idx + 1][-1][2]))
+            elif parts[0][0] == "bare" and text[parts[0][1]:parts[0][2]] in ("--message=", "-m") and inert_message(parts[1:]):
+                spans.append((parts[1][1], parts[-1][2]))
+    for a, b in sorted(spans, reverse=True):
+        text = text[:a] + "MESSAGE" + text[b:]
+    return text
 
 
 def strip_interpreter_heredocs(text: str) -> str:
@@ -1653,8 +1749,9 @@ def env_manager_init(path: Path) -> bool:
 
 def invoked_scripts(text: str, cwd: str, kinds: dict[Path, str] | None = None) -> list[Path]:
     """The scripts the command runs. `kinds`, if given, is filled with how each one
-    is run: "shell" (sh/bash/zsh…, `source`, `.`), "other" (python, node, php…) or
-    "direct" (`./x`: the shebang decides)."""
+    is run: "shell" (sh/bash/zsh…, `source`, `.`), "other" (python, node, php…),
+    "direct" (`./x`: the shebang decides) or "init" (a version manager's init
+    script, sourced from where it is installed)."""
     found: list[Path] = []
     for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
         for match in regex.finditer(text):
@@ -1671,7 +1768,7 @@ def invoked_scripts(text: str, cwd: str, kinds: dict[Path, str] | None = None) -
             if not path.is_absolute():
                 path = Path(cwd or os.getcwd()) / path
             if regex is SCRIPT_SOURCED and env_manager_init(path):
-                continue
+                kind = "init"
             try:
                 if path.is_file() and path.stat().st_size <= SCRIPT_MAX_BYTES and path not in found:
                     found.append(path)
@@ -1719,17 +1816,51 @@ SHELL_SUFFIXES = {".sh", ".bash", ".zsh", ".ksh", ".dash"}
 NON_SHELL_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".ts", ".php", ".pl", ".rb", ".r"}
 # A full-line comment: never runs. `cmd  # note` is kept whole, `#` may be in a string.
 COMMENT_LINE = re.compile(r"^[ \t]*#(?!!).*$", re.M)
-# In a non-shell script also `//` comments and the triple-quoted strings, where
-# Python keeps its usage text.
-NON_SHELL_INERT = re.compile(r"^[ \t]*//.*$|\"\"\".*?\"\"\"|'''.*?'''", re.M | re.S)
+SLASH_COMMENT_LINE = re.compile(r"^[ \t]*//.*$", re.M)
+SLASH_COMMENT_SUFFIXES = {".js", ".mjs", ".cjs", ".ts", ".php"}
 
 
-def without_comment_lines(content: str, shell: bool = True) -> str:
+def without_python_docstrings(content: str) -> str:
+    """Only the docstrings the parser finds (first statement of a module, class or
+    function), blanked in place; every other string literal stays visible, since a
+    triple-quoted argument of subprocess.run runs. A file that does not parse is
+    left whole."""
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return content
+    lines = content.split("\n")
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) and isinstance(body[0].value.value, str):
+            doc = body[0]
+            for ln in range(doc.lineno, doc.end_lineno + 1):
+                line = lines[ln - 1]
+                start = doc.col_offset if ln == doc.lineno else 0
+                end = doc.end_col_offset if ln == doc.end_lineno else len(line)
+                lines[ln - 1] = line[:start] + line[end:]
+    return "\n".join(lines)
+
+
+def without_comment_lines(content: str, path: Path, shell: bool = True) -> str:
     """The script without its full-line comments (the shebang stays). On 2026-11-08
     `./deploy-ovh.sh` was denied because a comment in it quoted
-    `python3 tools/deploy-ftp.py --remove <path>`, the command the project forbids."""
+    `python3 tools/deploy-ftp.py --remove <path>`, the command the project forbids.
+    A Python file also loses its docstrings, where it keeps its usage text; a
+    JavaScript or PHP file its `//` comment lines."""
     content = COMMENT_LINE.sub("", content)
-    return content if shell else NON_SHELL_INERT.sub("", content)
+    if shell:
+        return content
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return without_python_docstrings(content)
+    if suffix in SLASH_COMMENT_SUFFIXES:
+        return SLASH_COMMENT_LINE.sub("", content)
+    return content
 
 
 def is_shell_script(path: Path, content: str, kind: str = "direct") -> bool:
@@ -1764,11 +1895,15 @@ def check_scripts(text: str, config: dict, cwd: str) -> None:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        approval = script_approved(path, content, config)
-        shell = is_shell_script(path, content, kinds.get(path, "direct"))
+        kind = kinds.get(path, "direct")
+        # A version manager's init script counts as read and approved: the project's
+        # deny_commands and the removal of .guardrail.json still apply to it, the
+        # confirmations on its own `rm -rf "${NVM_DIR}/…"` do not.
+        approval = "yes" if kind == "init" else script_approved(path, content, config)
+        shell = is_shell_script(path, content, "shell" if kind == "init" else kind)
         rules = config if shell else {**config, "ask_commands": []}
         try:
-            check_bash(without_comment_lines(content, shell), rules, cwd, depth=1)
+            check_bash(without_comment_lines(content, path, shell), rules, cwd, depth=1)
         except Decision as found:
             # `deny_commands` is not exempted: it is the "this is never launched"
             # list, and applies even inside an approved script. The same for the

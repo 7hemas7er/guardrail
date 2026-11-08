@@ -116,6 +116,39 @@ same day. Three findings, all valid, all addressed with a test each:
   on their code without comments and triple-quoted strings; only `ask_commands`
   is skipped there.
 
+A second pass, on the committed version, found seven more, again all valid:
+
+- A quote opened in an earlier argument (`git commit --trailer "x -m 'y" ;
+  evil.sh ; echo "z'"`) made the regex take `'y" ; evil.sh ; echo "z'` for one
+  single-quoted message and hide what the shell runs. The regex is gone: a
+  scanner (`quoted_words`) tracks the quote state like the shell, finds `git` in
+  command position, and blanks only an inert message token. Unbalanced quotes
+  strip nothing.
+- `S=$TMPDIR/a/$X; rm -rf $S` with `X=..`: after the temp root only literal
+  characters are accepted, no `$`, backticks, braces, globs.
+- `TMPDIR` given a value by `read`, `printf -v`, `declare`, `export`, `+=`,
+  `for … in`, `getopts`, or anything through `eval`/`source`: every such form
+  counts as an assignment (`assigned_names`), and `eval`/`source` in the command
+  disable the exemption outright. The same list makes an alias opaque.
+- A triple-quoted string that is not a docstring (`subprocess.run("""…""")`)
+  was stripped too: Python docstrings are now found with `ast`, nothing else is
+  removed; a file that does not parse is scanned whole. `//` lines are removed
+  only in JavaScript, TypeScript and PHP.
+- `source ~/.nvm/nvm.sh` was exempt from every rule: it is now scanned like an
+  approved script, so the project's `deny_commands` and the removal of
+  `.guardrail.json` still apply to it, only the confirmations on its own `rm`
+  are skipped.
+- `cat \.env` and `cat ''.env` were suspected to slip past the tightened
+  `.env` lookbehind: they do not, the operands are shell-tokenized before the
+  match. Two tests pin that.
+
+Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
+to word splitting if `TMPDIR` holds spaces (the harness never sets such a
+value), and the hook lets the tool through on an internal error, printing
+"internal error, tool let through". The second is a pre-existing choice, and it
+is why a name collision in this very fix (`shell_words` already existed) made
+every rule pass until the suite caught it.
+
 ## Right as it is (noted, not changed)
 
 - `git push --delete`, `git branch -D`, `docker … volumes`: asked, as intended.

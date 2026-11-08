@@ -1,0 +1,4 @@
+{
+  "_comment": "Fixture for one case: a project that forbids a command nvm.sh contains (`nvm_download`). The init script is scanned like an approved script: its own rm on variables asks nothing, but deny_commands still applies to it.",
+  "deny_commands": ["nvm_download\\b"]
+}

@@ -462,6 +462,22 @@
 {"name": "security review 2026-11-08: backticks in a commit message run: block", "tool_name": "Bash", "tool_input": {"command": "git commit -m \"deploy `scripts/deploy/promote-to-production.sh`\""}, "expect": "deny"}
 {"name": "-m outside git is not a commit message", "tool_name": "Bash", "tool_input": {"command": "mytool -m \"scripts/deploy/promote-to-production.sh\""}, "expect": "deny"}
 {"name": "two -m messages on one commit are both prose", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'scripts/deploy/promote-to-production.sh' -m \"and scripts/deploy/rollback-production.sh\""}, "expect": "allow"}
+{"name": "security review 2026-11-08 (2): a quote opened in an earlier argument does not hide what the shell runs after it", "tool_name": "Bash", "tool_input": {"command": "git commit --trailer \"x -m 'y\" ; scripts/deploy/promote-to-production.sh ; echo \"z'\""}, "expect": "deny"}
+{"name": "a multi-line commit message with semicolons is still prose", "tool_name": "Bash", "tool_input": {"command": "git commit -q -m \"fix: a; b\n\nscripts/deploy/promote-to-production.sh is only mentioned; nothing runs\""}, "expect": "allow"}
+{"name": "--message=<quoted> is prose too", "tool_name": "Bash", "tool_input": {"command": "git commit --message='see scripts/deploy/promote-to-production.sh'"}, "expect": "allow"}
+{"name": "git -c option before commit: the message is still prose", "tool_name": "Bash", "tool_input": {"command": "git -c user.name=x commit -m 'scripts/deploy/promote-to-production.sh'"}, "expect": "allow"}
+{"name": "a message concatenated with an unquoted substitution runs: block", "tool_name": "Bash", "tool_input": {"command": "git commit -m ''\"$(scripts/deploy/promote-to-production.sh)\"''"}, "expect": "deny"}
+{"name": "an unbalanced quote strips nothing", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'scripts/deploy/promote-to-production.sh"}, "expect": "deny"}
 {"name": "security review 2026-11-08: a shell script with a .py suffix run with bash is shell", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/shell-in-disguise.py"}, "expect": "deny"}
 {"name": "security review 2026-11-08: the same run directly, by its shebang", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/shell-in-disguise.py"}, "expect": "deny"}
 {"name": "security review 2026-11-08: a Python script that really launches a forbidden command is denied", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/runs-deny.py"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): a triple-quoted string that is not a docstring stays visible", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/triple-quoted-run.py"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): an expansion after the temp root is not literal", "tool_name": "Bash", "tool_input": {"command": "X=../../..; S=$TMPDIR/a/$X; rm -rf $S"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): a glob after the first component is not literal", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/a/*"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): TMPDIR read from stdin in the same command: block", "tool_name": "Bash", "tool_input": {"command": "read TMPDIR; rm -rf $TMPDIR/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): TMPDIR set by printf -v: block", "tool_name": "Bash", "tool_input": {"command": "printf -v TMPDIR /; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): eval in the command hides assignments: block", "tool_name": "Bash", "tool_input": {"command": "eval \"TMPDIR=/\"; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): an alias set again with += is opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; S+=/../..; rm -rf $S/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): a backslash-escaped .env is still .env", "tool_name": "Bash", "tool_input": {"command": "cat \\.env"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): empty quotes before .env are still .env", "tool_name": "Bash", "tool_input": {"command": "cat ''.env"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): sourcing nvm is still subject to deny_commands", "config": "tests/guardrail.nvm-deny.test.json", "tool_name": "Bash", "tool_input": {"command": "source ~/.nvm/nvm.sh && node --version"}, "expect": "deny"}
