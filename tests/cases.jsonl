@@ -1,6 +1,7 @@
 {"name": "incident 2026-09-11: rm with HOME and a hidden glob", "tool_name": "Bash", "tool_input": {"command": "set -e\nS=/tmp/claude-1000/x/scratchpad/sim\nmkdir -p \"$S/home\"\nHOME=\"$S/home\" lftp -e 'bye'\nrm -rf \"$HOME\"/.[!.]* \"$S\""}, "expect": "deny"}
 {"name": "rm -rf on a variable", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"$S\""}, "expect": "deny"}
-{"name": "rm -rf on ${VAR}", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR}/build"}, "expect": "deny"}
+{"name": "rm -rf on ${TMPDIR}/<literal>: a temporary path with a literal suffix is fine (policy change of 2026-11-08)", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR}/build"}, "expect": "allow"}
+{"name": "rm -rf on ${VAR}/<literal>: any other variable stays opaque", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${BUILD_DIR}/build"}, "expect": "deny"}
 {"name": "rm -rf ~/.cache", "tool_name": "Bash", "tool_input": {"command": "rm -rf ~/.cache"}, "expect": "deny"}
 {"name": "rm -rf /home/user", "tool_name": "Bash", "tool_input": {"command": "rm -rf /home/master"}, "expect": "deny"}
 {"name": "rm -rf .*", "tool_name": "Bash", "tool_input": {"command": "cd /tmp/x && rm -rf .* *"}, "expect": "deny"}
@@ -419,3 +420,48 @@
 {"name": "python -c reading a plugin file and printing it with json.dumps: dumps does not write", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;d=json.load(open('/home/master/.claude/plugins/installed_plugins.json'));print(json.dumps(d))\""}, "expect": "allow"}
 {"name": "python -c reading .guardrail.json and printing it with json.dumps: read", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;print(json.dumps(json.load(open('.guardrail.json'))))\""}, "expect": "allow"}
 {"name": "python -c with json.dump on .guardrail.json opened for writing: confirmation", "tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json;json.dump({}, open('.guardrail.json','w'))\""}, "expect": "ask"}
+{"name": "log review 2026-11-08: rm -rf $TMPDIR/<literal> is a temp cleanup, not a variable target", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/head && mkdir -p $TMPDIR/head && git archive HEAD | tar -x -C $TMPDIR/head"}, "expect": "allow"}
+{"name": "log review 2026-11-08: rm -r on a quoted $TMPDIR with a literal glob prefix", "tool_name": "Bash", "tool_input": {"command": "rm -r \"$TMPDIR\"/offgone-*"}, "expect": "allow"}
+{"name": "log review 2026-11-08: ${TMPDIR:-/tmp}/<literal> is the same temp path", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR:-/tmp}/probe"}, "expect": "allow"}
+{"name": "rm -rf $TMPDIR/ (nothing after the root) is the whole temp dir: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/"}, "expect": "deny"}
+{"name": "rm -rf $TMPDIR/* empties the temp dir: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/*"}, "expect": "deny"}
+{"name": "rm -rf $TMPDIR/usr: with TMPDIR empty it is /usr, which exists: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/usr"}, "expect": "deny"}
+{"name": "rm -rf $TMPDIR/.hidden-glob stays a hidden glob: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/.[!.]*"}, "expect": "deny"}
+{"name": "rm -rf \"${TMPDIR}\" alone is still the whole temp dir: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"${TMPDIR}\""}, "expect": "deny"}
+{"name": "log review 2026-11-08: a variable set once, in the same command, to a /tmp literal path", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/x/scratchpad; rm -rf $S/snap && mkdir -p $S/snap"}, "expect": "allow"}
+{"name": "log review 2026-11-08: a variable set once to $TMPDIR/<literal>, then rm -rf on it", "tool_name": "Bash", "tool_input": {"command": "D=$TMPDIR/snap_head && rm -rf $D && mkdir -p $D && git archive HEAD | tar -x -C \"$D\""}, "expect": "allow"}
+{"name": "log review 2026-11-08: non-recursive rm -f on a variable set to a scratchpad path", "tool_name": "Bash", "tool_input": {"command": "SP=/tmp/claude-1000/s/t; rm -f $SP/session.txt $SP/seed.log; python3 $SP/seed.py"}, "expect": "allow"}
+{"name": "a variable set to $(mktemp -d) is not a literal: rm -rf on it stays a block", "tool_name": "Bash", "tool_input": {"command": "D=$(mktemp -d); cp -r src $D; rm -rf $D"}, "expect": "deny"}
+{"name": "a variable set twice is opaque even if one value is a temp path", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; S=$HOME; rm -rf $S/x"}, "expect": "deny"}
+{"name": "a variable set to a temp path but reassigned inside a for loop stays opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; for S in /etc /home; do rm -rf $S/x; done"}, "expect": "deny"}
+{"name": "rm -rf on a variable set outside the command: still a block", "tool_name": "Bash", "tool_input": {"command": "rm -rf \"$S\"/snap"}, "expect": "deny"}
+{"name": "rm -rf /tmp alone is a system root: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp"}, "expect": "deny"}
+{"name": "log review 2026-11-08: .env as a JMESPath field in an az query is not a file", "tool_name": "Bash", "tool_input": {"command": "az containerapp show -n app -g rg --query \"properties.template.containers[0].env[?name=='CACHE_STORE'].value\" -o tsv | head"}, "expect": "allow"}
+{"name": ".env after a brace or a comma is still the file", "tool_name": "Bash", "tool_input": {"command": "cat {.env,.env.local}"}, "expect": "deny"}
+{"name": ".env in a subdirectory is still the file", "tool_name": "Bash", "tool_input": {"command": "cat sub/.env"}, "expect": "deny"}
+{"name": ".env behind a variable directory is still the file", "tool_name": "Bash", "tool_input": {"command": "grep APP_KEY \"$D/.env\""}, "expect": "deny"}
+{"name": "log review 2026-11-08: a commit message that quotes a forbidden command is prose", "tool_name": "Bash", "tool_input": {"command": "git add README.md && git commit -q -m \"docs: explain why scripts/deploy/promote-to-production.sh is forbidden\""}, "expect": "allow"}
+{"name": "a commit message in single quotes that quotes a forbidden command is prose", "tool_name": "Bash", "tool_input": {"command": "git commit -q -m 'docs: scripts/deploy/promote-to-production.sh is off limits'"}, "expect": "allow"}
+{"name": "the forbidden command after the commit message is still run", "tool_name": "Bash", "tool_input": {"command": "git commit -q -m \"deploy\" && scripts/deploy/promote-to-production.sh"}, "expect": "deny"}
+{"name": "log review 2026-11-08: a Python tool whose usage text quotes a forbidden command is not that command", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/usage-mentions-deny.py --dry-run"}, "expect": "allow"}
+{"name": "a shell script that invokes the forbidden command is still denied (project regexes apply to shell scripts)", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/approved_but_denied.sh"}, "expect": "deny"}
+{"name": "log review 2026-11-08: sourcing the nvm init script is not running a project script", "tool_name": "Bash", "tool_input": {"command": "source ~/.nvm/nvm.sh >/dev/null && node --version"}, "expect": "allow"}
+{"name": "log review 2026-11-08: the dot form of sourcing nvm", "tool_name": "Bash", "tool_input": {"command": ". ~/.nvm/nvm.sh; npm test"}, "expect": "allow"}
+{"name": "rm after `do` in a for loop is a command too (gap found 2026-11-08)", "tool_name": "Bash", "tool_input": {"command": "for d in build dist; do rm -rf $d/x; done"}, "expect": "deny"}
+{"name": "rm after `then` is a command too", "tool_name": "Bash", "tool_input": {"command": "if [ -d \"$X\" ]; then rm -rf \"$X\"; fi"}, "expect": "deny"}
+{"name": "rm after `do` on a literal path: fine", "tool_name": "Bash", "tool_input": {"command": "for i in 1 2; do rm -rf build/out; done"}, "expect": "allow"}
+{"name": "log review 2026-11-08: a shell script whose comments quote forbidden commands does not run them", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/comment-mentions-deny.sh"}, "expect": "allow"}
+{"name": "the same script invoked directly", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/comment-mentions-deny.sh --dry-run"}, "expect": "allow"}
+{"name": "security review 2026-11-08: a `..` component leaves the temp folder: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/x/../../etc"}, "expect": "deny"}
+{"name": "security review 2026-11-08: TMPDIR set in the same command is not the session's: block", "tool_name": "Bash", "tool_input": {"command": "TMPDIR=/ rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08: exported TMPDIR in the same command: block", "tool_name": "Bash", "tool_input": {"command": "export TMPDIR=/srv; rm -rf $TMPDIR/data"}, "expect": "deny"}
+{"name": "security review 2026-11-08: an alias to $TMPDIR/… with TMPDIR reassigned: block", "tool_name": "Bash", "tool_input": {"command": "D=$TMPDIR/x; TMPDIR=/; rm -rf $D"}, "expect": "deny"}
+{"name": "security review 2026-11-08: ${TMPDIR:-<anything>} is not a temp path unless the default is /tmp", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR:-$HOME}/x"}, "expect": "deny"}
+{"name": "${TMPDIR:-/var/tmp}/<literal> is a temp path", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR:-/var/tmp}/probe"}, "expect": "allow"}
+{"name": "security review 2026-11-08: a command substitution in a commit message runs: block", "tool_name": "Bash", "tool_input": {"command": "git commit -q -m \"$(scripts/deploy/promote-to-production.sh)\""}, "expect": "deny"}
+{"name": "security review 2026-11-08: backticks in a commit message run: block", "tool_name": "Bash", "tool_input": {"command": "git commit -m \"deploy `scripts/deploy/promote-to-production.sh`\""}, "expect": "deny"}
+{"name": "-m outside git is not a commit message", "tool_name": "Bash", "tool_input": {"command": "mytool -m \"scripts/deploy/promote-to-production.sh\""}, "expect": "deny"}
+{"name": "two -m messages on one commit are both prose", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'scripts/deploy/promote-to-production.sh' -m \"and scripts/deploy/rollback-production.sh\""}, "expect": "allow"}
+{"name": "security review 2026-11-08: a shell script with a .py suffix run with bash is shell", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/shell-in-disguise.py"}, "expect": "deny"}
+{"name": "security review 2026-11-08: the same run directly, by its shebang", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/shell-in-disguise.py"}, "expect": "deny"}
+{"name": "security review 2026-11-08: a Python script that really launches a forbidden command is denied", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/runs-deny.py"}, "expect": "deny"}

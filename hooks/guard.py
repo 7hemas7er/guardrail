@@ -332,8 +332,10 @@ TIMEOUT_PREFIX = r"\btimeout\s+(?:[^\s;&|]+\s+)*?\d[\d.]*[smhd]?\s+"
 # In command position, also behind whatever launches the following command without
 # changing it: `command rm -rf "$X"` (the nvm.sh form), `env rm`, `FOO=1 rm`.
 RM_PREFIX = r"(?:(?:command|builtin|exec|nohup|time|env(?:\s+-[^\s;&|]+)*|\w+=[^\s;&|]*)\s+)*"
+# Also after `do`, `then`, `else` and `{`: `for d in …; do rm -rf $d; done` was
+# invisible until 2026-11-08, the rm never being at the start of a segment.
 RM_ANY = re.compile(
-    r"(?:(?:^|[;&|(\n])\s*" + RM_PREFIX + r"|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX
+    r"(?:(?:^|[;&|({\n])\s*(?:(?:do|then|else)\s+)?" + RM_PREFIX + r"|\bsudo\s+|\bxargs\s+(?:-[a-zA-Z0-9]+\s+)*|" + TIMEOUT_PREFIX
     + r")rm\s+(?P<args>[^;&|)\n]*)",
     re.M,
 )
@@ -356,13 +358,73 @@ FIND_DELETE = re.compile(
 )
 
 
+# A temporary path with a literal suffix: `$TMPDIR/build`, `${TMPDIR:-/tmp}/x`,
+# `/tmp/claude-1000/scratch/y`. The first component after the temp root must be
+# a literal name, not a glob, `.`, `..` or another variable. The harness itself
+# sets TMPDIR and tells the agent to use it: between 2026-10-01 and 2026-11-07,
+# 150 of the 174 rm decisions in real use were cleanups of such a path, each of
+# them retried by the agent with the literal path — same effect, one wasted turn.
+TEMP_ROOT = r"(?:\$\{TMPDIR(?::-/(?:var/)?tmp)?\}|\$TMPDIR|/tmp|/var/tmp)"
+# The command gives TMPDIR a value of its own (`TMPDIR=/ rm -rf $TMPDIR/home`,
+# `export TMPDIR=…`, `unset TMPDIR`): then `$TMPDIR` is whatever it says, and
+# nothing under it is exempt.
+TMPDIR_TAMPERED = re.compile(
+    r"(?:^|[\s;&|({])(?:(?:export|declare|local|readonly)\s+(?:-\w+\s+)*)?TMPDIR=|\bunset\s+(?:-\w\s+)*TMPDIR\b"
+)
+TEMP_TARGET = re.compile(TEMP_ROOT + r"/(?P<first>[\w][\w.@+=,-]*\*?)(?:/|$)")
+TEMP_ASSIGNMENT = re.compile(r"(?:^|[;&|(\n]\s*)(?P<name>[A-Za-z_]\w*)=(?P<value>[\"']?" + TEMP_ROOT + r"/[^\s;&|()]*)")
+# Everything that gives a variable a value: `X=`, `for X in`, `read X`, `export X=`.
+ANY_ASSIGNMENT = re.compile(
+    r"(?:^|[;&|(\n]\s*|\s)(?P<name>[A-Za-z_]\w*)="
+    r"|\bfor\s+(?P<loop>[A-Za-z_]\w*)\s+in\b"
+    r"|\bread\s+(?:-\w+\s+)*(?P<read>[A-Za-z_]\w*)\b"
+)
+
+
+def temp_aliases(cmd: str) -> dict[str, str]:
+    """Variables the command itself sets, once, to a temporary path with a literal
+    suffix: in `S=$TMPDIR/snap && rm -rf $S` the target of rm is `$TMPDIR/snap`.
+    A variable assigned twice, or to something not literal (`$(mktemp -d)`), stays
+    opaque."""
+    counts: dict[str, int] = {}
+    for m in ANY_ASSIGNMENT.finditer(cmd):
+        name = m.group("name") or m.group("loop") or m.group("read")
+        counts[name] = counts.get(name, 0) + 1
+    aliases: dict[str, str] = {}
+    for m in TEMP_ASSIGNMENT.finditer(cmd):
+        name, value = m.group("name"), m.group("value").strip("\"'")
+        if counts.get(name) == 1 and TEMP_TARGET.match(value):
+            aliases[name] = value
+    return aliases
+
+
+def temp_target(arg: str, aliases: dict[str, str]) -> str | None:
+    """The temporary path `arg` names, or None if it is not one. Resolves a leading
+    `$VAR`/`${VAR}` through `aliases`. Refuses a `..` component (`$TMPDIR/x/../../etc`
+    leaves the folder) and the names that, with TMPDIR empty, would land on a real
+    top-level directory (`$TMPDIR/snap` → `/snap`)."""
+    bare = arg.replace("\"", "").replace("'", "")
+    m = re.match(r"\$\{?([A-Za-z_]\w*)\}?(?P<rest>/.*)?$", bare)
+    if m and m.group(1) in aliases:
+        bare = aliases[m.group(1)] + (m.group("rest") or "")
+    found = TEMP_TARGET.match(bare)
+    if not found or ".." in bare.split("/"):
+        return None
+    first = found.group("first").rstrip("*")
+    if first and bare.startswith("$") and os.path.lexists("/" + first):
+        return None
+    return bare
+
+
 def check_rm(cmd: str) -> None:
+    tampered = TMPDIR_TAMPERED.search(cmd) is not None
+    aliases = {} if tampered else temp_aliases(cmd)
     for match in RM_ANY.finditer(cmd):
         args = match.group("args")
         recursive = RM_RECURSIVE_FLAG.search(" " + args) is not None
         variable_only: str | None = None
         for arg in args.split():
-            if arg.startswith("-") or not DANGEROUS_RM_TARGET.match(arg):
+            if arg.startswith("-") or (not tampered and temp_target(arg, aliases)) or not DANGEROUS_RM_TARGET.match(arg):
                 continue
             # A non-recursive rm on a variable has a limited reach: confirmation,
             # not block. Everything else (recursive, home, roots, globs) is a block.
@@ -401,9 +463,11 @@ def check_rm(cmd: str) -> None:
 # `.env` is a file name only if it starts there: in `process.env.HOME` and
 # `os.environ` it is a piece of an identifier, and reading it as the file `.env.HOME`
 # is the false positive of 2026-09-28 (9 times in a week). Before it there can be
-# the start, `/`, a space, a quote, `=`; never a letter or `$`.
+# the start, `/`, a space, a quote, `=`, a shell separator; never a letter, `$`,
+# `]`, `)` or `.`: in `containers[0].env[?name=='X']` (a JMESPath query of `az`,
+# 2026-10-27 and 2026-11-08) `.env` is a field, not a file.
 SECRET_FILE = re.compile(
-    r"(?:[\w./~-]*/)?(?:(?<![\w$])\.env(?:rc)?(?:\.[\w-]+)*(?![A-Za-z0-9])|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
+    r"(?:[\w./~-]*/)?(?:(?<![^\s\"'=/(;&|{,<>:])\.env(?:rc)?(?:\.[\w-]+)*(?![A-Za-z0-9])|\.secrets|\.netrc|\.pgpass|\.my\.cnf|\.htpasswd"
     r"|\.claude\.json|\.credentials\.json|credentials\.json|\.git-credentials|\.npmrc|\.pypirc"
     r"|\.aws/credentials|\.docker/config\.json|\.kube/config|gh/hosts\.yml|\.gnupg/[^\s\"']+"
     r"|[\w.-]+\.(?:pem|key|p12|pfx)|id_(?:rsa|ed25519|ecdsa|dsa))"
@@ -1113,6 +1177,27 @@ def strip_data_heredocs(text: str) -> str:
     return rewrite_heredoc(text, data_heredoc)
 
 
+# `git commit -m "…"`, `git tag -m`, `git merge -m`: the quoted message is prose.
+# On 2026-10-12 a commit that explained why `deploy-ftp.py --plain-ftp` is
+# forbidden was itself denied by the project rule that names it.
+# Only in a `git commit|tag|merge|stash|notes` segment, and only a message that
+# the shell leaves alone: single quotes, or double quotes without `$` and
+# backticks (`-m "$(scripts/deploy/promote.sh)"` runs the script).
+COMMIT_MESSAGE = re.compile(
+    r"""(?P<head>\bgit\s+(?:-\S+\s+)*(?:commit|tag|merge|stash|notes)\b[^;&|\n]*?\s)"""
+    r"""(?P<flag>-m|--message)(?P<sep>=|\s+)(?:"(?:[^"\\$`]|\\[^$`])*"|'[^']*')"""
+)
+
+
+def strip_commit_messages(text: str) -> str:
+    """The quoted argument of `-m`/`--message` emptied: a message is not a command."""
+    # The placeholder is not quoted, so it is not matched again (`""` would be: endless loop).
+    while True:
+        text, n = COMMIT_MESSAGE.subn(lambda m: f"{m.group('head')}{m.group('flag')}{m.group('sep')}MESSAGE", text)
+        if not n:
+            return text
+
+
 def strip_interpreter_heredocs(text: str) -> str:
     """The text the PROJECT REGEXES apply to, and only those.
 
@@ -1539,21 +1624,59 @@ def syntax_only(match: re.Match) -> bool:
     return "n" in letters and "i" not in letters
 
 
-def invoked_scripts(text: str, cwd: str) -> list[Path]:
+# Init scripts of the version managers, `source`d to get a toolchain on PATH.
+# They contain `rm -rf` on their own variables, so the scan asked for confirmation
+# 35 times in October 2026 for `source ~/.nvm/nvm.sh && node …`. Sourced from
+# their install location they are the tool, not a project script; /guardrail:approve
+# cannot cover them because it refuses paths outside the project.
+ENV_MANAGER_INIT_HOME = {
+    ".nvm/nvm.sh", ".nvm/bash_completion", ".cargo/env", ".sdkman/bin/sdkman-init.sh",
+    ".asdf/asdf.sh", ".rvm/scripts/rvm", ".fnm/fnm.sh", ".volta/load.sh",
+}
+ENV_MANAGER_INIT_SYSTEM = {
+    "/usr/share/nvm/init-nvm.sh", "/usr/share/nvm/nvm.sh", "/usr/local/share/nvm/nvm.sh",
+    "/usr/local/opt/nvm/nvm.sh", "/opt/homebrew/opt/nvm/nvm.sh", "/usr/share/rvm/scripts/rvm",
+}
+
+
+def env_manager_init(path: Path) -> bool:
+    if str(path) in ENV_MANAGER_INIT_SYSTEM:
+        return True
+    # As written (`~/.nvm/nvm.sh`) and as resolved: `~/.nvm` may be a link.
+    candidates = [relative_to_home(path)]
+    try:
+        candidates.append(path.relative_to(Path.home()))
+    except ValueError:
+        pass
+    return any(rel is not None and rel.as_posix() in ENV_MANAGER_INIT_HOME for rel in candidates)
+
+
+def invoked_scripts(text: str, cwd: str, kinds: dict[Path, str] | None = None) -> list[Path]:
+    """The scripts the command runs. `kinds`, if given, is filled with how each one
+    is run: "shell" (sh/bash/zsh…, `source`, `.`), "other" (python, node, php…) or
+    "direct" (`./x`: the shebang decides)."""
     found: list[Path] = []
     for regex in (SCRIPT_BY_INTERPRETER, SCRIPT_DIRECT, SCRIPT_SOURCED):
         for match in regex.finditer(text):
             if regex is SCRIPT_BY_INTERPRETER and syntax_only(match):
                 continue
+            if regex is SCRIPT_BY_INTERPRETER:
+                kind = "shell" if match.group("interp").endswith("sh") else "other"
+            else:
+                kind = "shell" if regex is SCRIPT_SOURCED else "direct"
             raw = match.group("path").strip("\"'")
             if "$" in raw:
                 continue
             path = Path(os.path.expanduser(raw))
             if not path.is_absolute():
                 path = Path(cwd or os.getcwd()) / path
+            if regex is SCRIPT_SOURCED and env_manager_init(path):
+                continue
             try:
                 if path.is_file() and path.stat().st_size <= SCRIPT_MAX_BYTES and path not in found:
                     found.append(path)
+                    if kinds is not None:
+                        kinds[path] = kind
             except OSError:
                 continue
     return found
@@ -1592,16 +1715,60 @@ def script_approved(path: Path, content: str, config: dict) -> str:
     return outcome
 
 
+SHELL_SUFFIXES = {".sh", ".bash", ".zsh", ".ksh", ".dash"}
+NON_SHELL_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".ts", ".php", ".pl", ".rb", ".r"}
+# A full-line comment: never runs. `cmd  # note` is kept whole, `#` may be in a string.
+COMMENT_LINE = re.compile(r"^[ \t]*#(?!!).*$", re.M)
+# In a non-shell script also `//` comments and the triple-quoted strings, where
+# Python keeps its usage text.
+NON_SHELL_INERT = re.compile(r"^[ \t]*//.*$|\"\"\".*?\"\"\"|'''.*?'''", re.M | re.S)
+
+
+def without_comment_lines(content: str, shell: bool = True) -> str:
+    """The script without its full-line comments (the shebang stays). On 2026-11-08
+    `./deploy-ovh.sh` was denied because a comment in it quoted
+    `python3 tools/deploy-ftp.py --remove <path>`, the command the project forbids."""
+    content = COMMENT_LINE.sub("", content)
+    return content if shell else NON_SHELL_INERT.sub("", content)
+
+
+def is_shell_script(path: Path, content: str, kind: str = "direct") -> bool:
+    """`bash x.py` is shell, `python3 x.sh` is not: the interpreter on the command
+    line decides. Run directly, the shebang decides, then the suffix; a file with
+    neither (`~/.cargo/env`) is shell."""
+    if kind in ("shell", "other"):
+        return kind == "shell"
+    first = content.split("\n", 1)[0]
+    if first.startswith("#!"):
+        return re.search(r"\b(?:ba|z|da|k|a)?sh\b", first) is not None
+    suffix = path.suffix.lower()
+    if suffix in SHELL_SUFFIXES:
+        return True
+    return suffix not in NON_SHELL_SUFFIXES
+
+
 def check_scripts(text: str, config: dict, cwd: str) -> None:
-    """A launched script is a command the hook would otherwise not see."""
-    for path in invoked_scripts(text, cwd):
+    """A launched script is a command the hook would otherwise not see.
+
+    The project regexes are written for a command line. In a shell script they
+    see the code without its comment lines. In a Python, Node or PHP script they
+    also lose the `//` comments and the triple-quoted strings, and only
+    `deny_commands` (the "this is never launched" list) still applies: on
+    2026-10-05 `python3 tools/deploy-ftp.py --dry-run x` (and `--help`) was denied
+    because the usage text of the script quoted its own forbidden flag, nine
+    times, until the agent gave up on the deploy altogether.
+    """
+    kinds: dict[Path, str] = {}
+    for path in invoked_scripts(text, cwd, kinds):
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         approval = script_approved(path, content, config)
+        shell = is_shell_script(path, content, kinds.get(path, "direct"))
+        rules = config if shell else {**config, "ask_commands": []}
         try:
-            check_bash(content, config, cwd, depth=1)
+            check_bash(without_comment_lines(content, shell), rules, cwd, depth=1)
         except Decision as found:
             # `deny_commands` is not exempted: it is the "this is never launched"
             # list, and applies even inside an approved script. The same for the
@@ -1744,7 +1911,7 @@ def check_bash(cmd: str, config: dict, cwd: str = "", depth: int = 0) -> None:
     # The project regexes look at the text without the bodies of the heredocs directed
     # to an interpreter: in there a path is quoted, not run. The built-in rules
     # lose them only if that code cannot reach the shell.
-    project_text = strip_interpreter_heredocs(text)
+    project_text = strip_commit_messages(strip_interpreter_heredocs(text))
     text = backticks_to_substitutions(strip_inert_heredocs(text))
 
     if depth == 0 and matches_any(config["allow_commands"], project_text):

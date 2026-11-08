@@ -5,7 +5,9 @@
    the repo or a human operator.
 2. **Never a variable in a destructive command.** `rm -rf "$X"`, `rm -rf ~/.*`,
    `rsync --delete $DIR`: forbidden. A deletion target is a literal path,
-   relative to the project, and you show the user what it contains first.
+   relative to the project, and you show the user what it contains first. The
+   one exception is the session's temporary folder with a literal suffix
+   (`rm -rf $TMPDIR/build`, or a variable the same command sets to such a path).
 3. **Deleting is never a side effect.** `--delete`, `prune`, `clean -x`,
    `migrate:fresh`, `TRUNCATE`, `DROP`: only with a dry-run shown and the user's
    explicit confirmation. If in doubt, list and stop.

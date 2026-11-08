@@ -18,7 +18,14 @@ does not resolve variables.
 - **Never a variable in a destructive command.** Not `rm -rf "$DIR"`, not
   `rm -rf "$HOME/..."`, not `rsync --delete "$SRC" "$DST"`. The target is a
   literal path, relative to the project. If you computed the path, print it,
-  show it, and use the printed one.
+  show it, and use the printed one. One exception, since 2026-11-08: the
+  session's temporary folder with a literal suffix, `rm -rf $TMPDIR/build` or
+  `S=$TMPDIR/snap; rm -rf $S/x`. The harness sets `TMPDIR` and tells the agent
+  to work there; in October 2026, 150 of the 174 `rm` decisions in real use
+  were such cleanups, each retried with the literal path, same effect, one
+  wasted turn. `$TMPDIR` alone, `$TMPDIR/*`, a hidden glob, a variable set
+  twice or set to `$(mktemp -d)` stay forbidden, as does a suffix that with
+  `TMPDIR` empty would be a real top-level directory (`$TMPDIR/usr`).
 - **Never hidden globs.** `.*`, `.[!.]*`, `..?*` take everything that starts
   with a dot, and in a home directory that is everything. If you must remove
   `.cache`, write `.cache`.
@@ -49,6 +56,8 @@ does not resolve variables.
 |---|---|
 | `rm -r` with a variable target (`$X`, `${X}`), and `rm` (recursive or not) on `~`, `/home/<user>`, system root, `.`, `..`, hidden globs, `*` | BLOCK |
 | Non-recursive `rm` with a variable target (`rm -f "$FILE"`) | CONFIRM |
+| `rm` on `$TMPDIR/<literal>`, `${TMPDIR:-/tmp}/<literal>`, `/tmp/<literal>`, or on a variable the same command sets once to such a path | allowed |
+| `rm` on `$TMPDIR` alone, `$TMPDIR/*`, `$TMPDIR/.[!.]*`, `$TMPDIR/<name>` where `/<name>` exists on the machine | BLOCK |
 | `find … -delete`, `find … -exec rm` | CONFIRM; BLOCK if the find root is one of the targets above |
 | `sudo rm` | BLOCK |
 | `sudo <anything else>` | CONFIRM |
