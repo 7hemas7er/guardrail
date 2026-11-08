@@ -372,9 +372,14 @@ TEMP_ASSIGNMENT = re.compile(r"(?:^|[;&|(\n]\s*)(?P<name>[A-Za-z_]\w*)=(?P<value
 # `getopts … X`, `unset X`.
 ANY_ASSIGNMENT = re.compile(
     r"(?:^|[;&|({\n]\s*|\s)(?P<name>[A-Za-z_]\w*)\+?="
-    r"|\bfor\s+(?P<loop>[A-Za-z_]\w*)\s+in\b"
-    r"|\b(?:read|unset|printf\s+-v|declare|typeset|local|export|readonly|mapfile|readarray)\s+(?:-\w+\s+)*(?P<decl>[A-Za-z_]\w*)\b"
+    r"|\b(?:for|select)\s+(?P<loop>[A-Za-z_]\w*)\s+in\b"
+    r"|\$\{(?P<param>[A-Za-z_]\w*):?=" # ${X:=default} assigns too
     r"|\bgetopts\s+\S+\s+(?P<opt>[A-Za-z_]\w*)\b"
+)
+# Builtins that take a list of names: every word up to the separator counts
+# (`read -r A B`, `declare -x A=1 B=2`), options skipped.
+NAMING_BUILTIN = re.compile(
+    r"\b(?:read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf\s+-v)\s+(?P<words>[^;&|\n()]*)"
 )
 # `eval` and `source` give variables values the text does not show: with them in
 # the command nothing is exempt.
@@ -383,9 +388,19 @@ OPAQUE_SHELL = re.compile(r"(?:^|[;&|({\s])(?:eval|source|\.)\s")
 
 def assigned_names(cmd: str) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for m in ANY_ASSIGNMENT.finditer(cmd):
-        name = m.group("name") or m.group("loop") or m.group("decl") or m.group("opt")
+
+    def seen(name: str) -> None:
         counts[name] = counts.get(name, 0) + 1
+
+    for m in ANY_ASSIGNMENT.finditer(cmd):
+        seen(m.group("name") or m.group("loop") or m.group("param") or m.group("opt"))
+    for m in NAMING_BUILTIN.finditer(cmd):
+        for word in m.group("words").split():
+            if word.startswith("-"):
+                continue
+            name = re.match(r"[A-Za-z_]\w*", word.strip("\"'"))
+            if name:
+                seen(name.group(0))
     return counts
 
 
@@ -1205,11 +1220,20 @@ GIT_MESSAGE_COMMANDS = frozenset({"commit", "tag", "merge", "stash", "notes"})
 GIT_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
 
 
+# What the scanner does not model, and the shell parses differently: ANSI-C and
+# locale strings (`$'a\\'b'` keeps going past the escaped quote), command
+# substitutions (their own quote context), comments (`#'` can rebalance quotes).
+# With any of them in the text nothing is stripped (security review, 2026-11-08).
+UNMODELED_QUOTING = re.compile(r"\$['\"(]|`|(?:^|\s)#")
+
+
 def quoted_words(text: str) -> list[list[list[tuple[str, int, int, bool]]]] | None:
     """Segments of words of parts. A part is (kind, start, end, active): kind is
     "bare", "single" or "double"; `start:end` is its raw span, quotes included;
     `active` says a double-quoted part carries `$` or a backtick. None if a
-    quote never closes."""
+    quote never closes or the text has a construct the scanner does not model."""
+    if UNMODELED_QUOTING.search(text):
+        return None
     segments: list[list[list[tuple[str, int, int, bool]]]] = [[]]
     word: list[tuple[str, int, int, bool]] = []
     i, n = 0, len(text)
@@ -1831,7 +1855,9 @@ def without_python_docstrings(content: str) -> str:
         tree = ast.parse(content)
     except (SyntaxError, ValueError):
         return content
-    lines = content.split("\n")
+    # ast offsets count UTF-8 bytes: slice bytes, or a non-ASCII docstring would
+    # take the code after it along.
+    lines = content.encode("utf-8").split(b"\n")
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1843,7 +1869,7 @@ def without_python_docstrings(content: str) -> str:
                 start = doc.col_offset if ln == doc.lineno else 0
                 end = doc.end_col_offset if ln == doc.end_lineno else len(line)
                 lines[ln - 1] = line[:start] + line[end:]
-    return "\n".join(lines)
+    return b"\n".join(lines).decode("utf-8", errors="replace")
 
 
 def without_comment_lines(content: str, path: Path, shell: bool = True) -> str:

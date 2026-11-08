@@ -142,6 +142,20 @@ A second pass, on the committed version, found seven more, again all valid:
   `.env` lookbehind: they do not, the operands are shell-tokenized before the
   match. Two tests pin that.
 
+A third pass found three more, two of them real bypasses reproduced by hand:
+
+- `git commit -m $'a\' -m ' ; evil.sh ; echo ' #' #'`: an ANSI-C string keeps
+  going past its escaped quote, so from there on the scanner's quote state is
+  the shell's shifted by one, and a span the scanner takes for an inert
+  message is code the shell runs. The scanner now strips nothing when the text
+  contains `$'`, `$"`, a backtick, `$(` or a word-initial `#`.
+- `ast` column offsets count UTF-8 bytes: a docstring with non-ASCII text that
+  ends on a line with code took the first bytes of that code along. Lines are
+  now sliced as bytes.
+- `read -r A TMPDIR`, `declare -x A=1 TMPDIR=/`, `: ${TMPDIR:=/}`, `select
+  TMPDIR in …`: every word of a naming builtin, the `${X:=…}` expansion and
+  `select` now count as assignments.
+
 Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
 to word splitting if `TMPDIR` holds spaces (the harness never sets such a
 value), and the hook lets the tool through on an internal error, printing

@@ -481,3 +481,11 @@
 {"name": "security review 2026-11-08 (3): a backslash-escaped .env is still .env", "tool_name": "Bash", "tool_input": {"command": "cat \\.env"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): empty quotes before .env are still .env", "tool_name": "Bash", "tool_input": {"command": "cat ''.env"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): sourcing nvm is still subject to deny_commands", "config": "tests/guardrail.nvm-deny.test.json", "tool_name": "Bash", "tool_input": {"command": "source ~/.nvm/nvm.sh && node --version"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): an ANSI-C string shifts the quote state; the scanner strips nothing", "tool_name": "Bash", "tool_input": {"command": "git commit -m $'a\\' -m ' ; scripts/deploy/promote-to-production.sh ; echo ' #' #'"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): a command substitution in the command: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'scripts/deploy/promote-to-production.sh' --date \"$(date)\""}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): a docstring with non-ASCII text does not swallow the code after it", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/utf8-docstring.py"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): read with several names assigns them all", "tool_name": "Bash", "tool_input": {"command": "read -r A TMPDIR; rm -rf $TMPDIR/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): declare with several assignments", "tool_name": "Bash", "tool_input": {"command": "declare -x A=1 TMPDIR=/; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): ${TMPDIR:=…} assigns", "tool_name": "Bash", "tool_input": {"command": ": ${TMPDIR:=/}; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): select assigns", "tool_name": "Bash", "tool_input": {"command": "select TMPDIR in / /x; do rm -rf $TMPDIR/home; done"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): an alias named by a later read is opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; read -r X S; rm -rf $S/x"}, "expect": "deny"}
