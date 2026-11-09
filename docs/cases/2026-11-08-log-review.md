@@ -162,6 +162,18 @@ does not model, so both now strip nothing. A naming builtin whose variable the
 text does not show (`read $N`, `declare -n ref=TMPDIR`, `printf -vTMPDIR`)
 makes every variable of the command opaque.
 
+A fifth pass found the quoting gap in that very check: `read T"MPDIR"`,
+`read TMP\DIR`, `declare -'n' R=TMPDIR`, `printf -vTMPDIR` all reach the
+builtin as the plain name or option, and the hook read them as something else.
+The words of a naming builtin are now split with `shlex` before any name or
+option is read from them; whatever is not then a plain name (`{A,B}`, `A?`, `$N`,
+an unbalanced quote) counts as opaque. Two false positives fell out of the same
+rewrite: a `$` in a quoted *value* (`export PATH="$HOME/bin:$PATH"`) and a
+here-string (`read -r A B <<< "$x"`) no longer cost the temp exemption. The
+pass also showed that the earlier tamper tests targeted `$TMPDIR/home`, which
+`/home` existing at the root would have blocked on its own: they now target a
+name that does not exist there.
+
 Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
 to word splitting if `TMPDIR` holds spaces (the harness never sets such a
 value), and the hook lets the tool through on an internal error, printing

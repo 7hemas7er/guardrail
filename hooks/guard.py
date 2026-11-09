@@ -377,10 +377,24 @@ ANY_ASSIGNMENT = re.compile(
     r"|\bgetopts\s+\S+\s+(?P<opt>[A-Za-z_]\w*)\b"
 )
 # Builtins that take a list of names: every word up to the separator counts
-# (`read -r A B`, `declare -x A=1 B=2`), options skipped.
+# (`read -r A B`, `declare -x A=1 B=2`), options skipped; `printf` names a
+# variable only with `-v` (`printf -v NAME`, `printf -vNAME`).
 NAMING_BUILTIN = re.compile(
-    r"\b(?:read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf\s+-v)\s+(?P<words>[^;&|\n()]*)"
+    r"\b(?P<builtin>read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf)\s+(?P<words>[^;&|\n()]*)"
 )
+# Options that consume the next word (`read -p "Name: " X`, `mapfile -d '' X`):
+# that word is not a name.
+OPTION_WITH_ARGUMENT = {
+    "read": frozenset("dinNptu"),
+    "mapfile": frozenset("cCdnOstu"),
+    "readarray": frozenset("cCdnOstu"),
+}
+PLAIN_OPTION = re.compile(r"-[A-Za-z]{1,3}")
+PLAIN_NAME = re.compile(r"[A-Za-z_]\w*")
+PRINTF_V = re.compile(r"-v(?P<name>[A-Za-z_]\w*)?")
+# A redirection among the words (`read X <<< "$line"`, `read X < file`): the
+# operator alone consumes the next word; attached (`<file`) it is complete.
+REDIRECTION = re.compile(r"\d*(?:<<<|<>|>>|<|>)(?P<rest>.*)")
 # `eval` and `source` give variables values the text does not show: with them in
 # the command nothing is exempt.
 OPAQUE_SHELL = re.compile(r"(?:^|[;&|({\s])(?:eval|source|\.)\s")
@@ -392,8 +406,8 @@ OPAQUE_SENTINEL = "*"
 def assigned_names(cmd: str) -> dict[str, int]:
     """How many times each variable is given a value. The key `*` (OPAQUE_SENTINEL)
     appears when a naming builtin names its variable in a way the text does not
-    show — `read $N`, `declare -n ref=X` (a nameref writes through) — and then
-    nothing about the command's variables can be trusted."""
+    show — `read $N`, `declare -n ref=X` (a nameref writes through), `read {A,B}`
+    — and then nothing about the command's variables can be trusted."""
     counts: dict[str, int] = {}
 
     def seen(name: str) -> None:
@@ -402,20 +416,59 @@ def assigned_names(cmd: str) -> dict[str, int]:
     for m in ANY_ASSIGNMENT.finditer(cmd):
         seen(m.group("name") or m.group("loop") or m.group("param") or m.group("opt"))
     for m in NAMING_BUILTIN.finditer(cmd):
-        for word in m.group("words").split():
-            if "$" in word or "`" in word:
-                seen(OPAQUE_SENTINEL)
-            if word.startswith("-"):
-                if re.match(r"-\w*n", word):
-                    seen(OPAQUE_SENTINEL)
-                attached = re.match(r"-\w(?P<rest>[A-Za-z_]\w*)", word)
-                if attached:
-                    seen(attached.group("rest"))  # -vNAME, -aNAME
-                continue
-            name = re.match(r"[A-Za-z_]\w*", word.strip("\"'"))
-            if name:
-                seen(name.group(0))
+        builtin_names(m.group("builtin"), m.group("words"), seen)
     return counts
+
+
+def builtin_names(builtin: str, words: str, seen) -> None:
+    """Calls `seen` with every variable the builtin's argument list names. The
+    words are split as the shell would (`T"MPDIR"`, `TMP\\DIR`, `-'n'` are
+    `TMPDIR`, `TMPDIR`, `-n` once the builtin sees them); whatever is not then a
+    plain name or a plain option — `$N`, `{A,B}`, `A?`, an unbalanced quote, a
+    nameref option — is reported as OPAQUE_SENTINEL."""
+    try:
+        tokens = shlex.split(words)
+    except ValueError:
+        seen(OPAQUE_SENTINEL)
+        return
+    takes_argument = OPTION_WITH_ARGUMENT.get(builtin, frozenset())
+    skip_next = want_name = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--":
+            continue
+        redirection = REDIRECTION.fullmatch(token)
+        if redirection:
+            skip_next = not redirection.group("rest")
+            continue
+        if token.startswith("-"):
+            if builtin == "printf":
+                attached = PRINTF_V.fullmatch(token)
+                if attached is None:
+                    seen(OPAQUE_SENTINEL)
+                elif attached.group("name"):
+                    seen(attached.group("name"))
+                    return
+                else:
+                    want_name = True
+                continue
+            if "n" in token or not PLAIN_OPTION.fullmatch(token):
+                seen(OPAQUE_SENTINEL)  # `declare -n` writes through; `-p"x"`, `-vNAME`: unknown shape
+                continue
+            if takes_argument & set(token[1:]):
+                skip_next = True
+            continue
+        if builtin == "printf" and not want_name:
+            return  # the format string: printf without -v names nothing
+        name = token.partition("=")[0].removesuffix("+")
+        if PLAIN_NAME.fullmatch(name):
+            seen(name)
+        else:
+            seen(OPAQUE_SENTINEL)
+        if builtin == "printf":
+            return
 
 
 def tmpdir_tampered(cmd: str) -> bool:

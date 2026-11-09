@@ -453,7 +453,7 @@
 {"name": "log review 2026-11-08: a shell script whose comments quote forbidden commands does not run them", "tool_name": "Bash", "tool_input": {"command": "bash tests/fixtures/comment-mentions-deny.sh"}, "expect": "allow"}
 {"name": "the same script invoked directly", "tool_name": "Bash", "tool_input": {"command": "./tests/fixtures/comment-mentions-deny.sh --dry-run"}, "expect": "allow"}
 {"name": "security review 2026-11-08: a `..` component leaves the temp folder: block", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/x/../../etc"}, "expect": "deny"}
-{"name": "security review 2026-11-08: TMPDIR set in the same command is not the session's: block", "tool_name": "Bash", "tool_input": {"command": "TMPDIR=/ rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08: TMPDIR set in the same command is not the session's: block", "tool_name": "Bash", "tool_input": {"command": "TMPDIR=/ rm -rf $TMPDIR/work"}, "expect": "deny"}
 {"name": "security review 2026-11-08: exported TMPDIR in the same command: block", "tool_name": "Bash", "tool_input": {"command": "export TMPDIR=/srv; rm -rf $TMPDIR/data"}, "expect": "deny"}
 {"name": "security review 2026-11-08: an alias to $TMPDIR/… with TMPDIR reassigned: block", "tool_name": "Bash", "tool_input": {"command": "D=$TMPDIR/x; TMPDIR=/; rm -rf $D"}, "expect": "deny"}
 {"name": "security review 2026-11-08: ${TMPDIR:-<anything>} is not a temp path unless the default is /tmp", "tool_name": "Bash", "tool_input": {"command": "rm -rf ${TMPDIR:-$HOME}/x"}, "expect": "deny"}
@@ -475,8 +475,8 @@
 {"name": "security review 2026-11-08 (3): an expansion after the temp root is not literal", "tool_name": "Bash", "tool_input": {"command": "X=../../..; S=$TMPDIR/a/$X; rm -rf $S"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): a glob after the first component is not literal", "tool_name": "Bash", "tool_input": {"command": "rm -rf $TMPDIR/a/*"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): TMPDIR read from stdin in the same command: block", "tool_name": "Bash", "tool_input": {"command": "read TMPDIR; rm -rf $TMPDIR/x"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (3): TMPDIR set by printf -v: block", "tool_name": "Bash", "tool_input": {"command": "printf -v TMPDIR /; rm -rf $TMPDIR/home"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (3): eval in the command hides assignments: block", "tool_name": "Bash", "tool_input": {"command": "eval \"TMPDIR=/\"; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): TMPDIR set by printf -v: block", "tool_name": "Bash", "tool_input": {"command": "printf -v TMPDIR /; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (3): eval in the command hides assignments: block", "tool_name": "Bash", "tool_input": {"command": "eval \"TMPDIR=/\"; rm -rf $TMPDIR/work"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): an alias set again with += is opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; S+=/../..; rm -rf $S/x"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): a backslash-escaped .env is still .env", "tool_name": "Bash", "tool_input": {"command": "cat \\.env"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (3): empty quotes before .env are still .env", "tool_name": "Bash", "tool_input": {"command": "cat ''.env"}, "expect": "deny"}
@@ -485,13 +485,25 @@
 {"name": "security review 2026-11-08 (4): a command substitution in the command: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'scripts/deploy/promote-to-production.sh' --date \"$(date)\""}, "expect": "deny"}
 {"name": "security review 2026-11-08 (4): a docstring with non-ASCII text does not swallow the code after it", "tool_name": "Bash", "tool_input": {"command": "python3 tests/fixtures/utf8-docstring.py"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (4): read with several names assigns them all", "tool_name": "Bash", "tool_input": {"command": "read -r A TMPDIR; rm -rf $TMPDIR/x"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (4): declare with several assignments", "tool_name": "Bash", "tool_input": {"command": "declare -x A=1 TMPDIR=/; rm -rf $TMPDIR/home"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (4): ${TMPDIR:=…} assigns", "tool_name": "Bash", "tool_input": {"command": ": ${TMPDIR:=/}; rm -rf $TMPDIR/home"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (4): select assigns", "tool_name": "Bash", "tool_input": {"command": "select TMPDIR in / /x; do rm -rf $TMPDIR/home; done"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): declare with several assignments", "tool_name": "Bash", "tool_input": {"command": "declare -x A=1 TMPDIR=/; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): ${TMPDIR:=…} assigns", "tool_name": "Bash", "tool_input": {"command": ": ${TMPDIR:=/}; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (4): select assigns", "tool_name": "Bash", "tool_input": {"command": "select TMPDIR in / /x; do rm -rf $TMPDIR/work; done"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (4): an alias named by a later read is opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; read -r X S; rm -rf $S/x"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (5): a comment right after a separator: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'a' ;#' -m ' ; scripts/deploy/promote-to-production.sh ; echo '"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (5): a heredoc operator: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'see scripts/deploy/promote-to-production.sh' -F - <<EOF\nmore\nEOF"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (5): a nameref writes through to TMPDIR", "tool_name": "Bash", "tool_input": {"command": "declare -n R=TMPDIR; R=/; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): a nameref writes through to TMPDIR", "tool_name": "Bash", "tool_input": {"command": "declare -n R=TMPDIR; R=/; rm -rf $TMPDIR/work"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (5): read with an indirect name", "tool_name": "Bash", "tool_input": {"command": "N=TMPDIR; read $N; rm -rf $TMPDIR/x"}, "expect": "deny"}
-{"name": "security review 2026-11-08 (5): printf -v with the name attached", "tool_name": "Bash", "tool_input": {"command": "printf -vTMPDIR /; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): printf -v with the name attached", "tool_name": "Bash", "tool_input": {"command": "printf -vTMPDIR /; rm -rf $TMPDIR/work"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (5): an indirect name makes every alias opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; N=S; read $N; rm -rf $S/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): nameref option quoted", "tool_name": "Bash", "tool_input": {"command": "declare -'n' R=TMPDIR; R=/home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): nameref option escaped", "tool_name": "Bash", "tool_input": {"command": "declare -\\n R=TMPDIR; R=/home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): read with the name split by quotes", "tool_name": "Bash", "tool_input": {"command": "read T\"MPDIR\" <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): read with a backslash in the name", "tool_name": "Bash", "tool_input": {"command": "read TMP\\DIR <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): read with a brace expansion", "tool_name": "Bash", "tool_input": {"command": "read {TMPDIR,X} <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): export with the name split by quotes", "tool_name": "Bash", "tool_input": {"command": "export T\"MPDIR\"=/home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): export with a glob in the name", "tool_name": "Bash", "tool_input": {"command": "export TMPDI?=/home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): unset with the name split by quotes", "tool_name": "Bash", "tool_input": {"command": "unset T\"MPDIR\"; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): printf -v with the name attached, target absent at the root", "tool_name": "Bash", "tool_input": {"command": "printf -vTMPDIR /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (6): a quoted value with $ does not make the command opaque", "tool_name": "Bash", "tool_input": {"command": "export PATH=\"$HOME/.local/bin:$PATH\"; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-08 (6): a here-string after read is not a name", "tool_name": "Bash", "tool_input": {"command": "read -r A B <<< 'x y'; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-08 (6): the argument of read -p is not a name", "tool_name": "Bash", "tool_input": {"command": "read -p 'Name: ' X <<< y; rm -rf $TMPDIR/build"}, "expect": "allow"}
