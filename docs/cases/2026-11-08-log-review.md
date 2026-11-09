@@ -156,6 +156,12 @@ A third pass found three more, two of them real bypasses reproduced by hand:
   TMPDIR in …`: every word of a naming builtin, the `${X:=…}` expansion and
   `select` now count as assignments.
 
+A fourth pass added two small ones: a `#` right after `;`, `&`, `|` or a
+parenthesis is a comment too, and a heredoc operator is a construct the scanner
+does not model, so both now strip nothing. A naming builtin whose variable the
+text does not show (`read $N`, `declare -n ref=TMPDIR`, `printf -vTMPDIR`)
+makes every variable of the command opaque.
+
 Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
 to word splitting if `TMPDIR` holds spaces (the harness never sets such a
 value), and the hook lets the tool through on an internal error, printing

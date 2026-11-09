@@ -489,3 +489,9 @@
 {"name": "security review 2026-11-08 (4): ${TMPDIR:=…} assigns", "tool_name": "Bash", "tool_input": {"command": ": ${TMPDIR:=/}; rm -rf $TMPDIR/home"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (4): select assigns", "tool_name": "Bash", "tool_input": {"command": "select TMPDIR in / /x; do rm -rf $TMPDIR/home; done"}, "expect": "deny"}
 {"name": "security review 2026-11-08 (4): an alias named by a later read is opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; read -r X S; rm -rf $S/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): a comment right after a separator: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'a' ;#' -m ' ; scripts/deploy/promote-to-production.sh ; echo '"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): a heredoc operator: nothing is stripped", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'see scripts/deploy/promote-to-production.sh' -F - <<EOF\nmore\nEOF"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): a nameref writes through to TMPDIR", "tool_name": "Bash", "tool_input": {"command": "declare -n R=TMPDIR; R=/; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): read with an indirect name", "tool_name": "Bash", "tool_input": {"command": "N=TMPDIR; read $N; rm -rf $TMPDIR/x"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): printf -v with the name attached", "tool_name": "Bash", "tool_input": {"command": "printf -vTMPDIR /; rm -rf $TMPDIR/home"}, "expect": "deny"}
+{"name": "security review 2026-11-08 (5): an indirect name makes every alias opaque", "tool_name": "Bash", "tool_input": {"command": "S=/tmp/claude-1000/a; N=S; read $N; rm -rf $S/x"}, "expect": "deny"}

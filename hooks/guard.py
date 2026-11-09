@@ -386,7 +386,14 @@ NAMING_BUILTIN = re.compile(
 OPAQUE_SHELL = re.compile(r"(?:^|[;&|({\s])(?:eval|source|\.)\s")
 
 
+OPAQUE_SENTINEL = "*"
+
+
 def assigned_names(cmd: str) -> dict[str, int]:
+    """How many times each variable is given a value. The key `*` (OPAQUE_SENTINEL)
+    appears when a naming builtin names its variable in a way the text does not
+    show — `read $N`, `declare -n ref=X` (a nameref writes through) — and then
+    nothing about the command's variables can be trusted."""
     counts: dict[str, int] = {}
 
     def seen(name: str) -> None:
@@ -396,7 +403,14 @@ def assigned_names(cmd: str) -> dict[str, int]:
         seen(m.group("name") or m.group("loop") or m.group("param") or m.group("opt"))
     for m in NAMING_BUILTIN.finditer(cmd):
         for word in m.group("words").split():
+            if "$" in word or "`" in word:
+                seen(OPAQUE_SENTINEL)
             if word.startswith("-"):
+                if re.match(r"-\w*n", word):
+                    seen(OPAQUE_SENTINEL)
+                attached = re.match(r"-\w(?P<rest>[A-Za-z_]\w*)", word)
+                if attached:
+                    seen(attached.group("rest"))  # -vNAME, -aNAME
                 continue
             name = re.match(r"[A-Za-z_]\w*", word.strip("\"'"))
             if name:
@@ -408,7 +422,8 @@ def tmpdir_tampered(cmd: str) -> bool:
     """The command gives TMPDIR a value of its own (`TMPDIR=/ rm -rf $TMPDIR/home`,
     `export TMPDIR`, `read TMPDIR`, `unset TMPDIR`, or anything through `eval`):
     then `$TMPDIR` is whatever it says, and nothing under it is exempt."""
-    return "TMPDIR" in assigned_names(cmd) or OPAQUE_SHELL.search(cmd) is not None
+    names = assigned_names(cmd)
+    return "TMPDIR" in names or OPAQUE_SENTINEL in names or OPAQUE_SHELL.search(cmd) is not None
 
 
 def temp_aliases(cmd: str) -> dict[str, str]:
@@ -418,6 +433,8 @@ def temp_aliases(cmd: str) -> dict[str, str]:
     opaque."""
     counts = assigned_names(cmd)
     aliases: dict[str, str] = {}
+    if OPAQUE_SENTINEL in counts:
+        return aliases
     for m in TEMP_ASSIGNMENT.finditer(cmd):
         name, value = m.group("name"), m.group("value").strip("\"'")
         if counts.get(name) == 1 and TEMP_TARGET.match(value):
@@ -1224,7 +1241,7 @@ GIT_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namesp
 # locale strings (`$'a\\'b'` keeps going past the escaped quote), command
 # substitutions (their own quote context), comments (`#'` can rebalance quotes).
 # With any of them in the text nothing is stripped (security review, 2026-11-08).
-UNMODELED_QUOTING = re.compile(r"\$['\"(]|`|(?:^|\s)#")
+UNMODELED_QUOTING = re.compile(r"\$['\"(]|`|(?:^|[\s;&|()])#|<<")
 
 
 def quoted_words(text: str) -> list[list[list[tuple[str, int, int, bool]]]] | None:
