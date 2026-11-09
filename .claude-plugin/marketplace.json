@@ -9,7 +9,7 @@
     {
       "name": "guardrail",
       "description": "Company rules for coding agents: hooks that block destructive commands, deploys that delete and write SQL in production; core rules at every session; per-service rules via skill.",
-      "version": "0.11.2",
+      "version": "0.11.3",
       "category": "security",
       "source": "./"
     }
