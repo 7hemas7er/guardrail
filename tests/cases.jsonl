@@ -507,3 +507,12 @@
 {"name": "security review 2026-11-08 (6): a quoted value with $ does not make the command opaque", "tool_name": "Bash", "tool_input": {"command": "export PATH=\"$HOME/.local/bin:$PATH\"; rm -rf $TMPDIR/build"}, "expect": "allow"}
 {"name": "security review 2026-11-08 (6): a here-string after read is not a name", "tool_name": "Bash", "tool_input": {"command": "read -r A B <<< 'x y'; rm -rf $TMPDIR/build"}, "expect": "allow"}
 {"name": "security review 2026-11-08 (6): the argument of read -p is not a name", "tool_name": "Bash", "tool_input": {"command": "read -p 'Name: ' X <<< y; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (7): mapfile -t takes no argument, the name follows", "tool_name": "Bash", "tool_input": {"command": "mapfile -t TMPDIR <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (7): readarray -t likewise", "tool_name": "Bash", "tool_input": {"command": "readarray -t TMPDIR <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (7): read -a names the array", "tool_name": "Bash", "tool_input": {"command": "read -ra TMPDIR <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (7): argument letter inside the cluster, the rest is its argument", "tool_name": "Bash", "tool_input": {"command": "read -dr TMPDIR <<< /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (7): a builtin inside backticks after printf is still seen", "tool_name": "Bash", "tool_input": {"command": "printf '%s' `read TMPDIR <<< /home/master`; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (7): a substitution in a value runs in a subshell, no tamper", "tool_name": "Bash", "tool_input": {"command": "export V=`cat x`; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (7): mapfile -t into another variable", "tool_name": "Bash", "tool_input": {"command": "mapfile -t LINES < list.txt; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (7): argument letter last in the cluster, next word skipped", "tool_name": "Bash", "tool_input": {"command": "read -rd '' X <<< y; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (7): printf without -v names nothing", "tool_name": "Bash", "tool_input": {"command": "printf '%s\\n' a b; rm -rf $TMPDIR/build"}, "expect": "allow"}

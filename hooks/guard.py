@@ -380,14 +380,14 @@ ANY_ASSIGNMENT = re.compile(
 # (`read -r A B`, `declare -x A=1 B=2`), options skipped; `printf` names a
 # variable only with `-v` (`printf -v NAME`, `printf -vNAME`).
 NAMING_BUILTIN = re.compile(
-    r"\b(?P<builtin>read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf)\s+(?P<words>[^;&|\n()]*)"
+    r"\b(?P<builtin>read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf(?=\s+-\w*v))\s+(?P<words>[^;&|\n()]*)"
 )
 # Options that consume the next word (`read -p "Name: " X`, `mapfile -d '' X`):
 # that word is not a name.
 OPTION_WITH_ARGUMENT = {
     "read": frozenset("dinNptu"),
-    "mapfile": frozenset("cCdnOstu"),
-    "readarray": frozenset("cCdnOstu"),
+    "mapfile": frozenset("cCdnOsu"),
+    "readarray": frozenset("cCdnOsu"),
 }
 PLAIN_OPTION = re.compile(r"-[A-Za-z]{1,3}")
 PLAIN_NAME = re.compile(r"[A-Za-z_]\w*")
@@ -425,7 +425,10 @@ def builtin_names(builtin: str, words: str, seen) -> None:
     words are split as the shell would (`T"MPDIR"`, `TMP\\DIR`, `-'n'` are
     `TMPDIR`, `TMPDIR`, `-n` once the builtin sees them); whatever is not then a
     plain name or a plain option — `$N`, `{A,B}`, `A?`, an unbalanced quote, a
-    nameref option — is reported as OPAQUE_SENTINEL."""
+    nameref option — is reported as OPAQUE_SENTINEL. A substitution in a value
+    (`export V=$(…)`) runs in a subshell and cannot touch the caller's variables:
+    check_bash has already turned backticks into `$(…)`, and the parenthesis ends
+    the words."""
     try:
         tokens = shlex.split(words)
     except ValueError:
@@ -457,8 +460,11 @@ def builtin_names(builtin: str, words: str, seen) -> None:
             if "n" in token or not PLAIN_OPTION.fullmatch(token):
                 seen(OPAQUE_SENTINEL)  # `declare -n` writes through; `-p"x"`, `-vNAME`: unknown shape
                 continue
-            if takes_argument & set(token[1:]):
-                skip_next = True
+            with_argument = [i for i, letter in enumerate(token[1:]) if letter in takes_argument]
+            if with_argument == [len(token) - 2]:
+                skip_next = True  # `read -rd X`: the argument is the next word
+            elif with_argument:
+                seen(OPAQUE_SENTINEL)  # `read -dr X`: the rest of the cluster is the argument
             continue
         if builtin == "printf" and not want_name:
             return  # the format string: printf without -v names nothing

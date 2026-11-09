@@ -174,6 +174,19 @@ pass also showed that the earlier tamper tests targeted `$TMPDIR/home`, which
 `/home` existing at the root would have blocked on its own: they now target a
 name that does not exist there.
 
+A sixth pass, on that rewrite, found two slips in the option table: `-t` of
+`mapfile`/`readarray` takes no argument (the hook skipped the name after it),
+and in a cluster such as `read -dr X` the letter that takes an argument is not
+last, so the rest of the cluster is its argument and `X` is the name. The table
+is corrected; a cluster with the argument letter anywhere but last counts as
+opaque. `printf` now enters the check only when `-v` follows, so a plain
+`printf '%s' …` cannot swallow a builtin written after it in the same segment.
+The review also asked for a backtick or `$(` in a value (`export V=$(cmd)`) to
+be opaque again: it is not, by choice. A substitution runs in a subshell and
+cannot touch the caller's variables, and `check_bash` has already turned
+backticks into `$(…)` by the time the names are read, so the parenthesis ends
+the word list anyway. A test pins the case as allowed.
+
 Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
 to word splitting if `TMPDIR` holds spaces (the harness never sets such a
 value), and the hook lets the tool through on an internal error, printing
