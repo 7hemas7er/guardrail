@@ -378,9 +378,11 @@ ANY_ASSIGNMENT = re.compile(
 )
 # Builtins that take a list of names: every word up to the separator counts
 # (`read -r A B`, `declare -x A=1 B=2`), options skipped; `printf` names a
-# variable only with `-v` (`printf -v NAME`, `printf -vNAME`).
+# variable only with `-v` (`printf -v NAME`, `printf -vNAME`): it enters when
+# its first word looks like an option, quotes allowed (`-'v'NAME`), and
+# builtin_names decides on the unquoted token.
 NAMING_BUILTIN = re.compile(
-    r"\b(?P<builtin>read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf(?=\s+-\w*v))\s+(?P<words>[^;&|\n()]*)"
+    r"\b(?P<builtin>read|unset|declare|typeset|local|export|readonly|mapfile|readarray|printf(?=\s+[\"'\\]*-))\s+(?P<words>[^;&|\n()]*)"
 )
 # Options that consume the next word (`read -p "Name: " X`, `mapfile -d '' X`):
 # that word is not a name.

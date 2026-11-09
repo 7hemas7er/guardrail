@@ -516,3 +516,8 @@
 {"name": "security review 2026-11-09 (7): mapfile -t into another variable", "tool_name": "Bash", "tool_input": {"command": "mapfile -t LINES < list.txt; rm -rf $TMPDIR/build"}, "expect": "allow"}
 {"name": "security review 2026-11-09 (7): argument letter last in the cluster, next word skipped", "tool_name": "Bash", "tool_input": {"command": "read -rd '' X <<< y; rm -rf $TMPDIR/build"}, "expect": "allow"}
 {"name": "security review 2026-11-09 (7): printf without -v names nothing", "tool_name": "Bash", "tool_input": {"command": "printf '%s\\n' a b; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (8): printf -v with the option quoted", "tool_name": "Bash", "tool_input": {"command": "printf -'v'TMPDIR /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (8): printf -v with the dash escaped", "tool_name": "Bash", "tool_input": {"command": "printf \\-v TMPDIR /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (8): printf -v with the whole option quoted", "tool_name": "Bash", "tool_input": {"command": "printf \"-v\" TMPDIR /home/master; rm -rf $TMPDIR/work"}, "expect": "deny"}
+{"name": "security review 2026-11-09 (8): printf -- then a format names nothing", "tool_name": "Bash", "tool_input": {"command": "printf -- '%s\\n' a b; rm -rf $TMPDIR/build"}, "expect": "allow"}
+{"name": "security review 2026-11-09 (8): -v as a printf argument, not an option", "tool_name": "Bash", "tool_input": {"command": "printf '%s\\n' -v; rm -rf $TMPDIR/build"}, "expect": "allow"}

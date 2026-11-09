@@ -187,6 +187,12 @@ cannot touch the caller's variables, and `check_bash` has already turned
 backticks into `$(…)` by the time the names are read, so the parenthesis ends
 the word list anyway. A test pins the case as allowed.
 
+A seventh pass caught the gap that `printf` lookahead had just opened: it
+required a literal `-v`, while `printf -'v'TMPDIR` and `printf \-v TMPDIR`
+reach the builtin as `-vTMPDIR` and `-v`. The lookahead now only asks that the
+first word look like an option, quotes and backslashes allowed, and the
+decision is taken on the unquoted token like everywhere else in that function.
+
 Two things the reviews did not change: an unquoted `$TMPDIR/x` is still subject
 to word splitting if `TMPDIR` holds spaces (the harness never sets such a
 value), and the hook lets the tool through on an internal error, printing
