@@ -30,6 +30,29 @@ group by it. For each group:
   before reporting them. The log has already truncated them, but has not
   redacted them.
 
+## 2-bis. Count by target
+
+The same events, counted by *what the command pointed at* instead of by rule:
+one rule can hit very different targets, and one target can trip several rules.
+Put each event in one class, from the first that applies:
+
+| Class | How to recognize it |
+|---|---|
+| session temporary folder | `$TMPDIR/…`, `/tmp/claude-…`, or a variable the command sets to one |
+| production | a `prod_mcp_servers` server, or a `prod_patterns` match (host, database, app name) |
+| secret file | `.env*`, keys, tokens, credentials |
+| guardrail and Claude Code config | `.guardrail.json`, `.claude/` (settings, commands, skills, hooks, plugins), `CLAUDE.md` |
+| invoked script | the reason starts with "the script … contains" |
+| outside the project | home, other repos, system paths |
+| git remote and branches | push, `--delete`, `branch -D`, force |
+| MCP server | any other MCP tool: name the server |
+| project path | everything else inside the project |
+
+Report it as a table with one row per class: total, `deny`, `ask`, and the
+projects it came from, most frequent first. Under the table, one line on the
+class that grew or shrank the most compared with the older half of the lines
+read: that is where a recent change in the hook or in a project shows.
+
 ## 3. Classify
 
 For each group, say whether in your view it is:
