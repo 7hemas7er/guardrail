@@ -1,6 +1,6 @@
 ---
 name: guardrail
-description: Company rules by service (database, deploy and infrastructure, filesystem/shell/secrets, git/GitHub/personal data). Load BEFORE running SQL, migrations, seeds, deploys, syncs with --delete, recursive rm, temp-file cleanups, pushes, closing issues, or touching people's data. Triggers on: prod, production, database, migrate, seed, deploy, promote, rollback, lftp, rsync, rm -rf, cleanup, .env, secrets, credentials, force push, GDPR, GPS, personal data.
+description: "Company rules by service (database, deploy and infrastructure, filesystem/shell/secrets, git/GitHub/personal data). Load BEFORE running SQL, migrations, seeds, deploys, syncs with --delete, recursive rm, temp-file cleanups, pushes, closing issues, or touching people's data. Triggers on: prod, production, database, migrate, seed, deploy, promote, rollback, lftp, rsync, rm -rf, cleanup, .env, secrets, credentials, force push, GDPR, GPS, personal data."
 ---
 
 # Guardrail — rules by service
