@@ -1,6 +1,6 @@
 {
   "name": "guardrail",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "description": "Company rules for coding agents: block or confirmation on destructive commands, deploys that delete, write SQL in production and secret files; core rules injected at every session; per-service rules loaded by the skill.",
   "author": {
     "name": "7hemas7er"
