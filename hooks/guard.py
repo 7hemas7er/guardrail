@@ -853,7 +853,13 @@ def write_targets(segment: str) -> list[str]:
         # 2026-10-07: `node join.ts ~/.claude/plugins/data/…/log.jsonl` denied as a
         # modification of the plugins. Whoever really writes there (tee, cp, rm, sed -i, `>`) is still seen.
         if not any(f in INLINE_CODE_FLAGS or re.fullmatch(r"-[a-zA-Z]*[ce]", f) for f in flags):
-            operands = [a for a in operands if not plugin_data(a)]
+            # The first operand is the script the interpreter runs: it reads it, it does
+            # not write it. False positive of 2026-11-26: `python3 -I
+            # ~/.claude/plugins/cache/…/scripts/controlla.py note.md` denied as a
+            # modification of the plugin. The script's arguments stay targets. If a flag
+            # with a value comes first (`-W ignore`), the value is exempted instead of the
+            # script, which stays a target: the error goes towards blocking.
+            operands = [a for a in operands[1:] if not plugin_data(a)]
     return targets + operands
 
 
