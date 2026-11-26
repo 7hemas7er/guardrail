@@ -858,8 +858,11 @@ def write_targets(segment: str) -> list[str]:
             # ~/.claude/plugins/cache/…/scripts/controlla.py note.md` denied as a
             # modification of the plugin. The script's arguments stay targets. If a flag
             # with a value comes first (`-W ignore`), the value is exempted instead of the
-            # script, which stays a target: the error goes towards blocking.
-            operands = [a for a in operands[1:] if not plugin_data(a)]
+            # script, which stays a target: the error goes towards blocking. With `-` the
+            # script comes from stdin (`python3 - guard.py < patch.py`) and the first
+            # operand is already an argument: nothing is exempted.
+            script_from_stdin = "-" in flags
+            operands = [a for a in (operands if script_from_stdin else operands[1:]) if not plugin_data(a)]
     return targets + operands
 
 
